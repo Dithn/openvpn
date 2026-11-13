@@ -50,6 +50,14 @@ configuration.
   after a failed auth. Older clients will keep using the token value and
   react according to ``--auth-retry``
 
+--auth-token-user base64username
+  Companion option to ``--auth-token``. This options allows one to override
+  the username used by the client when reauthenticating with the ``auth-token``.
+  It also allows one to use ``--auth-token`` in setups that normally do not use
+  username and password.
+
+  The username has to be base64 encoded.
+
 --auth-user-pass
   Authenticate with server using username/password.
 
@@ -60,10 +68,37 @@ configuration.
       auth-user-pass up
 
   If ``up`` is present, it must be a file containing username/password on 2
-  lines. If the password line is missing, OpenVPN will prompt for one.
+  lines or a flag named :code:`username-only` to indicate no password
+  should be prompted for. In the former case, if the password line is missing
+  in the file, OpenVPN will prompt for one.
 
   If ``up`` is omitted, username/password will be prompted from the
   console.
+
+  This option can also be inlined
+  ::
+
+    <auth-user-pass>
+    username
+    [password]
+    </auth-user-pass>
+
+  where password is optional, and will be prompted from the console if
+  missing.
+
+  The :code:`username-only` flag is meant to be used with SSO authentication.
+  In this case the user will be asked for a username but not password. Instead,
+  a dummy password :code:`[[BLANK]]` is generated internally and submitted to
+  the server. See management-notes.txt for how this option affects username/password
+  prompt via the management interface. For the console, it simply eliminates
+  the password prompt.
+
+  The :code:`username-only` flag cannot be used along with embedding username and/or
+  password in the config file, or while reading them from an external file. In
+  such cases, if only username is relevant and no password prompt is desired, a
+  dummy password like 'no_passsword' should be embedded as well. This flag is also
+  incompatible with the ``--static-challenge`` option and legacy ``dynamic challenge``
+  protocol.
 
   The server configuration must specify an ``--auth-user-pass-verify``
   script to verify the username/password provided by the client.
@@ -113,16 +148,21 @@ configuration.
   ifconfig settings pushed to the client would create an IP numbering
   conflict.
 
+  Valid syntax:
+  ::
+
+      client-nat snat|dnat network netmask alias
+
   Examples:
   ::
 
-      client-nat snat 192.168.0.0/255.255.0.0
-      client-nat dnat 10.64.0.0/255.255.0.0
+      client-nat snat 192.168.0.0 255.255.0.0 10.64.0.0
+      client-nat dnat 10.64.0.0 255.255.0.0 192.168.0.0
 
-  ``network/netmask`` (for example :code:`192.168.0.0/255.255.0.0`) defines
-  the local view of a resource from the client perspective, while
-  ``alias/netmask`` (for example :code:`10.64.0.0/255.255.0.0`) defines the
-  remote view from the server perspective.
+  ``network`` and ``netmask`` (for example :code:`192.168.0.0
+  255.255.0.0`) define the local view of a resource from the client
+  perspective, while ``alias`` (for example :code:`10.64.0.0`) defines the
+  remote view from the server perspective using the same netmask.
 
   Use :code:`snat` (source NAT) for resources owned by the client and
   :code:`dnat` (destination NAT) for remote resources.
@@ -130,12 +170,19 @@ configuration.
   Set ``--verb 6`` for debugging info showing the transformation of
   src/dest addresses in packets.
 
---connect-retry n
-  Wait ``n`` seconds between connection attempts (default :code:`5`).
+--connect-retry args
+  Wait ``n`` seconds between connection attempts (default :code:`1`).
   Repeated reconnection attempts are slowed down after 5 retries per
-  remote by doubling the wait time after each unsuccessful attempt. An
-  optional argument ``max`` specifies the maximum value of wait time in
-  seconds at which it gets capped (default :code:`300`).
+  remote by doubling the wait time after each unsuccessful attempt.
+
+  Valid syntaxes:
+  ::
+
+     connect retry n
+     connect retry n max
+
+  If the optional argument ``max`` is specified, the maximum wait time in
+  seconds gets capped at that value (default :code:`300`).
 
 --connect-retry-max n
   ``n`` specifies the number of times each ``--remote`` or
@@ -146,6 +193,76 @@ configuration.
 --connect-timeout n
   See ``--server-poll-timeout``.
 
+--dns args
+  Client DNS configuration to be used with the connection.
+
+  Valid syntaxes:
+  ::
+
+     dns search-domains domain [domain ...]
+     dns server n address addr[:port] [addr[:port] ...]
+     dns server n resolve-domains domain [domain ...]
+     dns server n dnssec yes|optional|no
+     dns server n transport DoH|DoT|plain
+     dns server n sni server-name
+
+  The ``--dns search-domains`` directive takes one or more domain names
+  to be added as DNS domain suffixes. If it is repeated multiple times within
+  a configuration the domains are appended, thus e.g. domain names pushed by
+  a server will amend locally defined ones.
+
+  The ``--dns server`` directive is used to configure DNS server ``n``.
+  The server id ``n`` must be a value between -128 and 127. For pushed
+  DNS server options it must be between 0 and 127. The server id is used
+  to group options and also for ordering the list of configured DNS servers;
+  lower numbers come first. DNS servers being pushed to a client replace
+  already configured DNS servers with the same server id. Only the group of
+  options corresponding to the lowest server id is applied.
+
+  The ``address`` option configures the IPv4 and / or IPv6 address(es) of
+  the DNS server. Up to eight addresses can be specified per DNS server.
+  Optionally a port can be appended after a colon. IPv6 addresses need to
+  be enclosed in brackets if a port is appended.
+
+  The ``resolve-domains`` option takes one or more DNS domains used to define
+  a split-dns or dns-routing setup, where only the given domains are resolved
+  by the server. Systems which do not support fine grained DNS domain
+  configuration will ignore this setting.
+
+  The ``dnssec`` option is used to configure validation of DNSSEC records.
+  While the exact semantics may differ for resolvers on different systems,
+  ``yes`` likely makes validation mandatory, ``no`` disables it, and ``optional``
+  uses it opportunistically.
+
+  The ``transport`` option enables DNS-over-HTTPS (``DoH``) or DNS-over-TLS (``DoT``)
+  for a DNS server. The ``sni`` option can be used with them to specify the
+  ``server-name`` for TLS server name indication.
+
+  Each server has to have at least one address configured for a configuration
+  to be valid. All the other options can be omitted.
+
+  Note that not all options may be supported on all platforms. As soon support
+  for different systems is implemented, information will be added here how
+  unsupported options are treated.
+
+  The ``--dns`` option will eventually obsolete the ``--dhcp-option`` directive.
+  Until then it will replace configuration at the places ``--dhcp-option`` puts it,
+  so that ``--dns`` overrides ``--dhcp-option``. Thus, ``--dns`` can be used today
+  to migrate from ``--dhcp-option``.
+
+  Windows only:
+
+  #. If tap-windows6 is in use, dns servers are set by DHCP by default.
+     In this case only ``--dns search-domains`` and ``--dns server n address ..``
+     with the lowest value of ``n`` are interpreted. All other ``--dns`` options
+     are ignored. Use of the dco driver is the recommended way to make use of these
+     new features.
+
+  #. If ``--dns server n resolve-domains`` is in use, the DNS server addresses
+     corresponding to ``n`` are set on the interface only if ``search-domains`` is
+     also specified.  Otherwise these DNS addresses are used only for NRPT rules for
+     split-DNS.
+
 --explicit-exit-notify n
   In UDP client mode or point-to-point mode, send server/peer an exit
   notification if tunnel is restarted or OpenVPN process is exited. In
@@ -153,9 +270,14 @@ configuration.
   immediately close its client instance object rather than waiting for a
   timeout.
 
+  If both server and client support sending this message using the control
+  channel, the message will be sent as control-channel message. Otherwise
+  the message is sent as data-channel message, which will be ignored by
+  data-channel offloaded peers.
+
   The **n** parameter (default :code:`1` if not present) controls the
   maximum number of attempts that the client will try to resend the exit
-  notification message.
+  notification message if messages are sent in data-channel mode.
 
   In UDP server mode, send :code:`RESTART` control channel command to
   connected clients. The ``n`` parameter (default :code:`1` if not present)
@@ -187,9 +309,24 @@ configuration.
   counted as traffic, as they are used internally by OpenVPN and are not
   an indication of actual user activity.
 
+  NOTE: on FreeBSD with DCO, due to platform limits, the previous paragraph
+  is not correct.  In that case, encapsulation overhead and keepalives are
+  counted, so using this feature needs a sufficiently-high ``bytes`` value to
+  take these extra numbers into account.
+
 --proto-force p
   When iterating through connection profiles, only consider profiles using
   protocol ``p`` (:code:`tcp` \| :code:`udp`).
+
+  Note that this specifically only filters by the transport layer
+  protocol, i.e. UDP or TCP. This does not affect whether IPv4 or
+  IPv6 is used as IP protocol.
+
+  For implementation reasons the option accepts the :code:`4` and :code:`6`
+  suffixes when specifying the protocol
+  (i.e. :code:`udp4` / :code:`udp6` / :code:`tcp4` / :code:`tcp6`).
+  However, these behave the same as without the suffix and should be avoided
+  to prevent confusion.
 
 --pull
   This option must be used on a client which is connecting to a
@@ -242,6 +379,117 @@ configuration.
   reconnect, unless multiple remotes are specified and connection to the
   next remote succeeds. To silently ignore an option pushed by the server,
   use :code:`ignore`.
+
+  *Warning:* ``pull-filter`` cannot be relied upon as a security measure to
+  protect against offending options pushed by a server. For example, the
+  filter could be defeated by pushing options with extra spaces between
+  tokens or other formatting variations.
+
+--push-peer-info
+  Push additional information about the client to server. The following
+  data is always pushed to the server:
+
+  :code:`IV_VER=<version>`
+        The client OpenVPN version
+
+  :code:`IV_PLAT=[linux|solaris|openbsd|mac|netbsd|freebsd|win]`
+        The client OS platform
+
+  :code:`IV_PROTO`
+    Details about protocol extensions that the peer supports. The
+    variable is a bitfield and the bits are defined as follows:
+
+    - bit 0: Reserved, should always be zero
+    - bit 1: The peer supports peer-id floating mechanism
+    - bit 2: The client expects a push-reply and the server may
+      send this reply without waiting for a push-request first.
+    - bit 3: The client is capable of doing key derivation using
+      RFC5705 key material exporter.
+    - bit 4: The client is capable of accepting additional arguments
+      to the ``AUTH_PENDING`` message.
+    - bit 5: The client supports doing feature negotiation in P2P mode
+    - bit 6: The client is capable of parsing and receiving the ``--dns`` pushed option
+    - bit 7: The client is capable of sending exit notification via control channel using ``EXIT`` message. Also, the client is accepting the protocol-flags pushed option for the EKM capability
+    - bit 8: The client is capable of accepting ``AUTH_FAILED,TEMP`` messages
+    - bit 9: The client is capable of dynamic tls-crypt
+    - bit 10: The client is capable of data epoch keys
+
+  :code:`IV_NCP=2`
+        Negotiable ciphers, client supports ``--cipher`` pushed by
+        the server, a value of 2 or greater indicates client supports
+        *AES-GCM-128* and *AES-GCM-256*. IV_NCP is *deprecated* in
+        favor of ``IV_CIPHERS``.
+
+  :code:`IV_CIPHERS=<data-ciphers>`
+        The client announces the list of supported ciphers configured with the
+        ``--data-ciphers`` option to the server.
+
+  :code:`IV_MTU=<max_mtu>`
+        The client announces the support of pushable MTU and the maximum MTU
+        it is willing to accept.
+
+  :code:`IV_GUI_VER=<gui_id> <version>`
+        The UI version of a UI if one is running, for example
+        :code:`de.blinkt.openvpn 0.5.47` for the Android app.
+        This may be set by the client UI/GUI using ``--setenv``.
+
+  :code:`IV_SSO=[crtext,][openurl,][proxy_url]`
+        Additional authentication methods supported by the client.
+        This may be set by the client UI/GUI using ``--setenv``.
+
+  :code:`IV_ACC=<max_msg_len>,<flags>,<protocols>`
+        If the option ``--app-custom-control`` is set, the client will
+        send the supported max ACC message length, the supported formats
+        as (:code:`A:6`) and the list of configured protocols (e.g.
+        :code:`flower:happy:power`)
+
+  The following flags depend on which compression formats are compiled in
+  and whether compression is allowed by options. See `Protocol options`_
+  for more details.
+
+    :code:`IV_LZO=1`
+        If client supports LZO compression.
+
+    :code:`IV_LZO_STUB=1`
+        If client was built with LZO stub capability. This is only sent if
+        ``IV_LZO=1`` is not sent. This means the client can talk to a server
+        configured with ``--comp-lzo no``.
+
+    :code:`IV_LZ4=1` and :code:`IV_LZ4v2=1`
+        If the client supports LZ4 compression.
+
+    :code:`IV_COMP_STUB=1` and :code:`IV_COMP_STUBv2=1`
+        If the client supports stub compression. This means the client can talk
+        to a server configured with ``--compress``.
+
+  When ``--push-peer-info`` is enabled the additional information consists
+  of the following data:
+
+  :code:`IV_HWADDR=<string>`
+        This is intended to be a unique and persistent ID of the client.
+        The string value can be any readable ASCII string up to 64 bytes.
+        OpenVPN 2.x and some other implementations use the MAC address of
+        the client's interface used to reach the default gateway. If this
+        string is generated by the client, it should be consistent and
+        preserved across independent sessions and preferably
+        re-installations and upgrades.
+
+  :code:`IV_SSL=<version string>`
+        The ssl library version used by the client, e.g.
+        :code:`OpenSSL 1.0.2f 28 Jan 2016`.
+
+  :code:`IV_PLAT_VER=x.y`
+        The version of the operating system, e.g. 6.1 for Windows 7.
+        This may be set by the client UI/GUI using ``--setenv``.
+        On Windows systems it is automatically determined by openvpn
+        itself.  On other platforms OpenVPN will default to sending
+        the information returned by the ``uname()`` system call in
+        the ``release`` field, which is usually the currently running
+        kernel version.  This is highly system specific, though.
+
+  :code:`UV_<name>=<value>`
+        Client environment variables whose names start with
+        :code:`UV_`
 
 --remote args
   Remote host name or IP address, port and protocol.
@@ -321,10 +569,21 @@ configuration.
   If hostname resolve fails for ``--remote``, retry resolve for ``n``
   seconds before failing.
 
-  Set ``n`` to "infinite" to retry indefinitely.
+  Set ``n`` to :code:`infinite` to retry indefinitely.
 
   By default, ``--resolv-retry infinite`` is enabled. You can disable by
   setting n=0.
+
+--preresolve
+  Resolve configured ``--remote``, ``--local``, ``--http-proxy``, and
+  ``--socks-proxy`` hostnames at startup before opening the connection.
+
+  The resolved addresses are cached and reused for reconnects, so OpenVPN
+  will not re-resolve these hostnames after the initial connection attempt.
+  This can help configurations where DNS is unavailable while the VPN is
+  down, but can be counter-productive for dynamic DNS names or when roaming
+  between networks where address family availability changes, such as
+  DNS64/NAT64.
 
 --single-session
   After initially connecting to a remote peer, disallow any new
@@ -340,7 +599,7 @@ configuration.
 --server-poll-timeout n
   When connecting to a remote server do not wait for more than ``n``
   seconds for a response before trying the next server. The default value
-  is 120s. This timeout includes proxy and TCP connect timeouts.
+  is :code:`120`. This timeout includes proxy and TCP connect timeouts.
 
 --static-challenge args
   Enable static challenge/response protocol
@@ -348,12 +607,15 @@ configuration.
   Valid syntax:
   ::
 
-     static-challenge text echo
+     static-challenge text echo [format]
 
   The ``text`` challenge text is presented to the user which describes what
   information is requested.  The ``echo`` flag indicates if the user's
   input should be echoed on the screen.  Valid ``echo`` values are
-  :code:`0` or :code:`1`.
+  :code:`0` or :code:`1`. The optional ``format`` indicates whether
+  the password and response should be combined using the SCRV1 protocol
+  (``format`` = :code:`scrv1`) or simply concatenated (``format`` = :code:`concat`).
+  :code:`scrv1` is the default.
 
   See management-notes.txt in the OpenVPN distribution for a description of
   the OpenVPN challenge/response protocol.

@@ -2,12 +2,12 @@
 
 IFACE="ovpn-dummy0"
 UNIT_TEST="./unit_tests/openvpn/networking_testdriver"
-MAX_TEST=${1:-7}
+LAST_AUTO_TEST=7
+LAST_TEST=8
 
 srcdir="${srcdir:-.}"
 top_builddir="${top_builddir:-..}"
-openvpn="${top_builddir}/src/openvpn/openvpn"
-
+openvpn="${openvpn:-${top_builddir}/src/openvpn/openvpn}"
 
 # bail out right away on non-linux. NetLink (the object of this test) is only
 # used on Linux, therefore testing other platform is not needed.
@@ -68,7 +68,6 @@ run_test()
     done
 }
 
-
 ## execution starts here
 
 # t_client.rc required only for RUN_SUDO definition
@@ -88,21 +87,18 @@ if [ ! -x "$UNIT_TEST" ]; then
     exit 77
 fi
 
-
 # Ensure PREFER_KSU is in a known state
 PREFER_KSU="${PREFER_KSU:-0}"
 
 # make sure we have permissions to run the networking unit-test
-ID=`id`
-if expr "$ID" : "uid=0" >/dev/null
-then :
+ID=$(id)
+if expr "$ID" : "uid=0" >/dev/null; then
+    :
 else
-    if [ "${PREFER_KSU}" -eq 1 ];
-    then
+    if [ "${PREFER_KSU}" -eq 1 ]; then
         # Check if we have a valid kerberos ticket
         klist -l 1>/dev/null 2>/dev/null
-        if [ $? -ne 0 ];
-        then
+        if [ $? -ne 0 ]; then
             # No kerberos ticket found, skip ksu and fallback to RUN_SUDO
             PREFER_KSU=0
             echo "$0: No Kerberos ticket available.  Will not use ksu."
@@ -111,16 +107,14 @@ else
         fi
     fi
 
-    if [ -z "$RUN_SUDO" ]
-    then
+    if [ -z "$RUN_SUDO" ]; then
         echo "$0: no RUN_SUDO=... in t_client.rc or environment, defaulting to 'sudo'." >&2
         echo "      if that does not work, set RUN_SUDO= correctly for your system." >&2
         RUN_SUDO="sudo"
     fi
 
     # check that we can run the unit-test binary with sudo
-    if $RUN_SUDO $UNIT_TEST test
-    then
+    if $RUN_SUDO $UNIT_TEST test; then
         echo "$0: $RUN_SUDO $UNIT_TEST succeeded, good."
     else
         echo "$0: $RUN_SUDO $UNIT_TEST failed, cannot go on. SKIP." >&2
@@ -128,7 +122,7 @@ else
     fi
 fi
 
-for i in $(seq 0 $MAX_TEST); do
+for i in $(seq 0 $LAST_AUTO_TEST); do
     # reload dummy module to cleanup state
     reload_dummy
     typeset -a STATE_TEST
@@ -166,6 +160,16 @@ for i in $(seq 0 $MAX_TEST); do
 done
 
 # remove interface for good
-$RUN_SUDO $openvpn --dev $IFACE --dev-type tun --rmtun >/dev/null
+$RUN_SUDO ip link del $IFACE
+
+for i in $(seq $((LAST_AUTO_TEST + 1)) ${LAST_TEST}); do
+    $RUN_SUDO $UNIT_TEST $i
+    if [ $? -ne 0 ]; then
+        echo "unit-test $i errored out"
+        exit 1
+    fi
+
+    echo "Test $i: OK"
+done
 
 exit 0

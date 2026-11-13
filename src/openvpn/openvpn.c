@@ -5,7 +5,7 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -17,14 +17,11 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#elif defined(_MSC_VER)
-#include "config-msvc.h"
 #endif
 
 #include "syshead.h"
@@ -33,6 +30,7 @@
 #include "forward.h"
 #include "multi.h"
 #include "win32.h"
+#include "options_show.h"
 #include "platform.h"
 
 #include "memdbg.h"
@@ -62,9 +60,10 @@ tunnel_point_to_point(struct context *c)
 
     /* set point-to-point mode */
     c->mode = CM_P2P;
-
-    /* initialize tunnel instance */
-    init_instance_handle_signals(c, c->es, CC_HARD_USR1_TO_HUP);
+    /* initialize tunnel instance, avoid SIGHUP when config is stdin since
+     * re-reading the config from stdin will not work */
+    bool stdin_config = c->options.config && (strcmp(c->options.config, "stdin") == 0);
+    init_instance_handle_signals(c, c->es, stdin_config ? 0 : CC_HARD_USR1_TO_HUP);
     if (IS_SIG(c))
     {
         return;
@@ -73,8 +72,6 @@ tunnel_point_to_point(struct context *c)
     /* main event loop */
     while (true)
     {
-        perf_push(PERF_EVENT_LOOP);
-
         /* process timers, TLS, etc. */
         pre_select(c);
         P2P_CHECK_SIG();
@@ -86,16 +83,15 @@ tunnel_point_to_point(struct context *c)
         /* timeout? */
         if (c->c2.event_set_status == ES_TIMEOUT)
         {
-            perf_pop();
             continue;
         }
 
         /* process the I/O which triggered select */
-        process_io(c);
+        process_io(c, c->c2.link_sockets[0]);
         P2P_CHECK_SIG();
-
-        perf_pop();
     }
+
+    persist_client_stats(c);
 
     uninit_management_callback();
 
@@ -104,6 +100,33 @@ tunnel_point_to_point(struct context *c)
 }
 
 #undef PROCESS_SIGNAL_P2P
+
+void
+init_early(struct context *c)
+{
+    net_ctx_init(c, &c->net_ctx);
+
+    /* init verbosity and mute levels */
+    init_verb_mute(c, IVM_LEVEL_1);
+
+    /* Initialise OpenSSL provider, this needs to be initialised this
+     * early since option post-processing and also openssl info
+     * printing depends on it */
+    for (int j = 1; j < MAX_PARMS && c->options.providers.names[j]; j++)
+    {
+        c->options.providers.providers[j] = crypto_load_provider(c->options.providers.names[j]);
+    }
+}
+
+static void
+uninit_early(struct context *c)
+{
+    for (int j = 1; j < MAX_PARMS && c->options.providers.providers[j]; j++)
+    {
+        crypto_unload_provider(c->options.providers.names[j], c->options.providers.providers[j]);
+    }
+    net_ctx_free(&c->net_ctx);
+}
 
 
 /**************************************************************************/
@@ -126,8 +149,7 @@ tunnel_point_to_point(struct context *c)
  * @param argc - Commandline argument count.
  * @param argv - Commandline argument values.
  */
-static
-int
+static int
 openvpn_main(int argc, char *argv[])
 {
     struct context c;
@@ -163,7 +185,6 @@ openvpn_main(int argc, char *argv[])
             context_clear_all_except_first_time(&c);
 
             /* static signal info object */
-            CLEAR(siginfo_static);
             c.sig = &siginfo_static;
 
             /* initialize garbage collector scoped to context object */
@@ -181,7 +202,7 @@ openvpn_main(int argc, char *argv[])
 #endif
 
             /* initialize options to default state */
-            init_options(&c.options, true);
+            init_options(&c.options);
 
             /* parse command line options, and read configuration file */
             parse_argv(&c.options, argc, argv, M_USAGE, OPT_P_DEFAULT, NULL, c.es);
@@ -193,10 +214,9 @@ openvpn_main(int argc, char *argv[])
             open_plugins(&c, true, OPENVPN_PLUGIN_INIT_PRE_CONFIG_PARSE);
 #endif
 
-            net_ctx_init(&c, &c.net_ctx);
-
-            /* init verbosity and mute levels */
-            init_verb_mute(&c, IVM_LEVEL_1);
+            /* Early initialisation that need to happen before option
+             * post processing and other early startup but after parsing */
+            init_early(&c);
 
             /* set dev options */
             init_options_dev(&c.options);
@@ -220,7 +240,7 @@ openvpn_main(int argc, char *argv[])
             }
 
             /* sanity check on options */
-            options_postprocess(&c.options);
+            options_postprocess(&c.options, c.es);
 
             /* show all option settings */
             show_settings(&c.options);
@@ -232,21 +252,26 @@ openvpn_main(int argc, char *argv[])
 #endif
             show_library_versions(M_INFO);
 
+            show_debug_warning(M_INFO);
+
+            show_dco_version(M_INFO);
+
             /* misc stuff */
             pre_setup(&c.options);
 
             /* test crypto? */
-            if (do_test_crypto(&c.options))
+            if (c.options.test_crypto)
             {
+                do_test_crypto(&c);
                 break;
             }
 
             /* Query passwords before becoming a daemon if we don't use the
              * management interface to get them. */
-#ifdef ENABLE_MANAGEMENT
             if (!(c.options.management_flags & MF_QUERY_PASSWORDS))
-#endif
-            init_query_passwords(&c);
+            {
+                init_query_passwords(&c);
+            }
 
             /* become a daemon if --daemon */
             if (c.first_time)
@@ -302,15 +327,13 @@ openvpn_main(int argc, char *argv[])
 
                 /* pass restart status to management subsystem */
                 signal_restart_status(c.sig);
-            }
-            while (c.sig->signal_received == SIGUSR1);
+            } while (signal_reset(c.sig, SIGUSR1) == SIGUSR1);
 
             env_set_destroy(c.es);
             uninit_options(&c.options);
             gc_reset(&c.gc);
-            net_ctx_free(&c.net_ctx);
-        }
-        while (c.sig->signal_received == SIGHUP);
+            uninit_early(&c);
+        } while (signal_reset(c.sig, SIGHUP) == SIGHUP);
     }
 
     context_gc_free(&c);
@@ -328,6 +351,12 @@ openvpn_main(int argc, char *argv[])
 }
 
 #ifdef _WIN32
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 int
 wmain(int argc, wchar_t *wargv[])
 {
@@ -335,8 +364,21 @@ wmain(int argc, wchar_t *wargv[])
     int ret;
     int i;
 
-    if ((argv = calloc(argc+1, sizeof(char *))) == NULL)
+    /*
+     * Do not use the argv provided by the CRT. Split the command line with
+     * CommandLineToArgvW() instead, which is what the interactive service uses
+     * to validate the options. The two disagree on some quoting, e.g. "" within
+     * a quoted string, which would let options slip past the validation.
+     */
+    wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (wargv == NULL)
     {
+        return 1;
+    }
+
+    if ((argv = calloc(argc + 1, sizeof(char *))) == NULL)
+    {
+        LocalFree(wargv);
         return 1;
     }
 
@@ -346,6 +388,7 @@ wmain(int argc, wchar_t *wargv[])
         argv[i] = malloc(n);
         WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, argv[i], n, NULL, NULL);
     }
+    LocalFree(wargv);
 
     ret = openvpn_main(argc, argv);
 
@@ -357,6 +400,11 @@ wmain(int argc, wchar_t *wargv[])
 
     return ret;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 #else  /* ifdef _WIN32 */
 int
 main(int argc, char *argv[])

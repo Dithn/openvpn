@@ -5,7 +5,7 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2010-2018 Fox Crypto B.V. <openvpn@fox-it.com>
+ *  Copyright (C) 2010-2026 Sentyron B.V. <openvpn@sentyron.com>
  *
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -18,8 +18,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 /**
@@ -33,7 +32,7 @@
  * This documentation describes the internal structure of OpenVPN.  It was
  * automatically generated from specially formatted comment blocks in
  * OpenVPN's source code using Doxygen.  (See
- * http://www.stack.nl/~dimitri/doxygen/ for more information on Doxygen)
+ * https://www.doxygen.nl/ for more information on Doxygen)
  *
  * The \ref mainpage_modules "Modules section" below gives an introduction
  * into the high-level module concepts used throughout this documentation.

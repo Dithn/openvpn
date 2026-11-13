@@ -48,10 +48,8 @@ platforms.
 OpenVPN is tightly bound to the OpenSSL library, and derives much of its
 crypto capabilities from it.
 
-OpenVPN supports conventional encryption using a pre-shared secret key
-**(Static Key mode)** or public key security **(SSL/TLS mode)** using
-client & server certificates. OpenVPN also supports non-encrypted
-TCP/UDP tunnels.
+OpenVPN supports conventional encryption using public key security
+with TLS **(SSL/TLS mode)** using client & server certificates.
 
 OpenVPN is designed to work with the **TUN/TAP** virtual networking
 interface that exists on most platforms.
@@ -86,7 +84,6 @@ placed in a configuration file.
 .. include:: man-sections/connection-profiles.rst
 .. include:: man-sections/inline-files.rst
 .. include:: man-sections/signals.rst
-.. include:: man-sections/examples.rst
 
 
 FAQ
@@ -98,6 +95,8 @@ https://community.openvpn.net/openvpn/wiki/FAQ
 
 HOWTO
 =====
+The manual ``openvpn-examples``\(5) gives some examples, especially for
+small setups.
 
 For a more comprehensive guide to setting up OpenVPN in a production
 setting, see the OpenVPN HOWTO at
@@ -108,18 +107,17 @@ https://openvpn.net/community-resources/how-to/
 PROTOCOL
 ========
 
-For a description of OpenVPN's underlying protocol, see
-https://openvpn.net/community-resources/openvpn-protocol/
-
+An ongoing effort to document the OpenVPN protocol can be found under
+https://github.com/openvpn/openvpn-rfc
 
 
 WEB
 ===
 
-OpenVPN's web site is at https://openvpn.net/
+OpenVPN's web site is at https://community.openvpn.net/
 
 Go here to download the latest version of OpenVPN, subscribe to the
-mailing lists, read the mailing list archives, or browse the SVN
+mailing lists, read the mailing list archives, or browse the Git
 repository.
 
 
@@ -134,6 +132,7 @@ Report all bugs to the OpenVPN team info@openvpn.net
 SEE ALSO
 ========
 
+``openvpn-examples``\(5),
 ``dhcpcd``\(8),
 ``ifconfig``\(8),
 ``openssl``\(1),
@@ -149,10 +148,10 @@ NOTES
 This product includes software developed by the OpenSSL Project
 (https://www.openssl.org/)
 
-For more information on the TLS protocol, see
-http://www.ietf.org/rfc/rfc2246.txt
+For more information on the TLS protocol see:
+https://tools.ietf.org/html/rfc2246
 
-For more information on the LZO real-time compression library see
+For more information on the LZO real-time compression library see:
 https://www.oberhumer.com/opensource/lzo/
 
 
@@ -160,7 +159,7 @@ https://www.oberhumer.com/opensource/lzo/
 COPYRIGHT
 =========
 
-Copyright (C) 2002-2020 OpenVPN Inc This program is free software; you
+Copyright (C) 2002-2025 OpenVPN Inc This program is free software; you
 can redistribute it and/or modify it under the terms of the GNU General
 Public License version 2 as published by the Free Software Foundation.
 

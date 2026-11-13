@@ -65,11 +65,6 @@ server and client mode operations.
   When the management interface is listening on a unix domain socket, only
   allow connections from group ``g``.
 
---management-client-pf
-  Management interface clients must specify a packet filter file for each
-  connecting client. See :code:`management-notes.txt` in OpenVPN
-  distribution for detailed notes.
-
 --management-client-user u
   When the management interface is listening on a unix domain socket, only
   allow connections from user ``u``.
@@ -90,9 +85,15 @@ server and client mode operations.
      management-external-key
      management-external-key nopadding
      management-external-key pkcs1
-     management-external-key nopadding pkcs1
+     management-external-key pss
 
-  The optional parameters :code:`nopadding` and :code:`pkcs1` signal
+  or any combination like:
+  ::
+
+     management-external-key nopadding pkcs1
+     management-external-key pkcs1 pss
+
+  The optional parameters :code:`nopadding` :code:`pkcs1` and :code:`pss` signal
   support for different padding algorithms. See
   :code:`doc/mangement-notes.txt` for a complete description of this
   feature.
@@ -133,3 +134,17 @@ server and client mode operations.
 
 --management-up-down
   Report tunnel up/down events to management interface.
+
+--app-custom-control protocol-list
+  Sets the list of supported app custom control protocols.
+  These protocols are announced to the server via the IV_ACC peer info
+  variable when this option is used on a client.
+  If the option is set on a server it will negotiate common protocols
+  with the client.
+
+  The protocol-list is a : separated list of protocol identifiers. Protocol
+  identifiers must consist of alphanumeric characters, :code:`-`, and
+  :code:`_`.
+
+  See management-notes.txt in the OpenVPN distribution and the OpenVPN RFC
+  draft for a description of app custom control protocol support.

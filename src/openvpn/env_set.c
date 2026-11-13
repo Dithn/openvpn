@@ -5,9 +5,9 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2017 OpenVPN Technologies, Inc. <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Technologies, Inc. <sales@openvpn.net>
  *  Copyright (C) 2014-2015 David Sommerseth <davids@redhat.com>
- *  Copyright (C) 2016-2017 David Sommerseth <davids@openvpn.net>
+ *  Copyright (C) 2016-2026 David Sommerseth <davids@openvpn.net>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -20,14 +20,11 @@
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program (see the file COPYING included with this
- *  distribution); if not, write to the Free Software Foundation, Inc.,
- *  59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *  distribution); if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#elif defined(_MSC_VER)
-#include "config-msvc.h"
 #endif
 
 #include "syshead.h"
@@ -35,6 +32,7 @@
 #include "env_set.h"
 
 #include "run_command.h"
+#include "platform.h"
 
 /*
  * Set environmental variable (int or string).
@@ -64,14 +62,13 @@ construct_name_value(const char *name, const char *value, struct gc_arena *gc)
 static bool
 env_string_equal(const char *s1, const char *s2)
 {
-    int c1, c2;
     ASSERT(s1);
     ASSERT(s2);
 
     while (true)
     {
-        c1 = *s1++;
-        c2 = *s2++;
+        int c1 = *s1++;
+        int c2 = *s2++;
         if (c1 == '=')
         {
             c1 = 0;
@@ -211,17 +208,16 @@ env_set_get(const struct env_set *es, const char *name)
 }
 
 void
-env_set_print(int msglevel, const struct env_set *es)
+env_set_print(msglvl_t msglevel, const struct env_set *es)
 {
     if (check_debug_level(msglevel))
     {
         const struct env_item *e;
-        int i;
 
         if (es)
         {
+            int i = 0;
             e = es->list;
-            i = 0;
 
             while (e)
             {
@@ -234,6 +230,30 @@ env_set_print(int msglevel, const struct env_set *es)
             }
         }
     }
+}
+
+void
+env_set_write_file(const char *path, const struct env_set *es)
+{
+    FILE *fp = platform_fopen(path, "w");
+    if (!fp)
+    {
+        msg(M_ERR, "could not write env set to '%s'", path);
+        return;
+    }
+
+    if (es)
+    {
+        const struct env_item *item = es->list;
+        while (item)
+        {
+            fputs(item->string, fp);
+            fputc('\n', fp);
+            item = item->next;
+        }
+    }
+
+    fclose(fp);
 }
 
 void
@@ -261,7 +281,7 @@ void
 setenv_counter(struct env_set *es, const char *name, counter_type value)
 {
     char buf[64];
-    openvpn_snprintf(buf, sizeof(buf), counter_format, value);
+    snprintf(buf, sizeof(buf), counter_format, value);
     setenv_str(es, name, buf);
 }
 
@@ -269,7 +289,7 @@ void
 setenv_int(struct env_set *es, const char *name, int value)
 {
     char buf[64];
-    openvpn_snprintf(buf, sizeof(buf), "%d", value);
+    snprintf(buf, sizeof(buf), "%d", value);
     setenv_str(es, name, buf);
 }
 
@@ -277,7 +297,7 @@ void
 setenv_long_long(struct env_set *es, const char *name, long long value)
 {
     char buf[64];
-    openvpn_snprintf(buf, sizeof(buf), "%" PRIi64, (int64_t)value);
+    snprintf(buf, sizeof(buf), "%" PRIi64, (int64_t)value);
     setenv_str(es, name, buf);
 }
 
@@ -312,7 +332,7 @@ setenv_str_incr(struct env_set *es, const char *name, const char *value)
     strcpy(tmpname, name);
     while (NULL != env_set_get(es, tmpname) && counter < 1000)
     {
-        ASSERT(openvpn_snprintf(tmpname, tmpname_len, "%s_%u", name, counter));
+        ASSERT(checked_snprintf(tmpname, tmpname_len, "%s_%u", name, counter));
         counter++;
     }
     if (counter < 1000)
@@ -334,15 +354,10 @@ setenv_del(struct env_set *es, const char *name)
 }
 
 void
-setenv_str_ex(struct env_set *es,
-              const char *name,
-              const char *value,
-              const unsigned int name_include,
-              const unsigned int name_exclude,
-              const char name_replace,
-              const unsigned int value_include,
-              const unsigned int value_exclude,
-              const char value_replace)
+setenv_str_ex(struct env_set *es, const char *name, const char *value,
+              const unsigned int name_include, const unsigned int name_exclude,
+              const char name_replace, const unsigned int value_include,
+              const unsigned int value_exclude, const char value_replace)
 {
     struct gc_arena gc = gc_new();
     const char *name_tmp;
@@ -417,12 +432,15 @@ env_allowed(const char *str)
     return (script_security() >= SSEC_PW_ENV || !is_password_env_var(str));
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /* Make arrays of strings */
 
 const char **
-make_env_array(const struct env_set *es,
-               const bool check_allowed,
-               struct gc_arena *gc)
+make_env_array(const struct env_set *es, const bool check_allowed, struct gc_arena *gc)
 {
     char **ret = NULL;
     struct env_item *e = NULL;
@@ -438,7 +456,7 @@ make_env_array(const struct env_set *es,
     }
 
     /* alloc return array */
-    ALLOC_ARRAY_CLEAR_GC(ret, char *, n+1, gc);
+    ALLOC_ARRAY_CLEAR_GC(ret, char *, n + 1, gc);
 
     /* fill return array */
     if (es)
@@ -457,3 +475,7 @@ make_env_array(const struct env_set *es,
     ret[i] = NULL;
     return (const char **)ret;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif

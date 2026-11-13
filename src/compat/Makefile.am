@@ -5,19 +5,12 @@
 #             packet encryption, packet authentication, and
 #             packet compression.
 #
-#  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
+#  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
 #  Copyright (C) 2006-2012 Alon Bar-Lev <alon.barlev@gmail.com>
 #
 
 MAINTAINERCLEANFILES = \
 	$(srcdir)/Makefile.in
-
-EXTRA_DIST = \
-	compat.vcxproj \
-	compat.vcxproj.filters \
-	PropertySheet.props \
-	Debug.props \
-	Release.props
 
 noinst_LTLIBRARIES = libcompat.la
 
@@ -27,5 +20,6 @@ libcompat_la_SOURCES = \
 	compat-basename.c \
 	compat-gettimeofday.c \
 	compat-daemon.c \
+	compat-strlcpy.c \
 	compat-strsep.c \
-	compat-versionhelpers.h
+	compat-strtok_r.c

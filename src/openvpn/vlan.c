@@ -5,7 +5,7 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2019 OpenVPN Technologies, Inc. <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Technologies, Inc. <sales@openvpn.net>
  *  Copyright (C) 2010      Fabian Knittel <fabian.knittel@lettink.de>
  *
  *  This program is free software; you can redistribute it and/or modify
@@ -18,14 +18,11 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#elif defined(_MSC_VER)
-#include "config-msvc.h"
 #endif
 
 #include "syshead.h"
@@ -55,9 +52,14 @@ vlanhdr_get_vid(const struct openvpn_8021qhdr *hdr)
 static void
 vlanhdr_set_vid(struct openvpn_8021qhdr *hdr, const uint16_t vid)
 {
-    hdr->pcp_cfi_vid = (hdr->pcp_cfi_vid & ~OPENVPN_8021Q_MASK_VID)
-                       | (htons(vid) & OPENVPN_8021Q_MASK_VID);
+    hdr->pcp_cfi_vid =
+        (hdr->pcp_cfi_vid & ~OPENVPN_8021Q_MASK_VID) | (htons(vid) & OPENVPN_8021Q_MASK_VID);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 /*
  * vlan_decapsulate - remove 802.1q header and return VID
@@ -88,7 +90,7 @@ vlan_decapsulate(const struct context *c, struct buffer *buf)
     uint16_t vid;
 
     /* assume untagged frame */
-    if (BLEN(buf) < sizeof(*ethhdr))
+    if (BLENZ(buf) < sizeof(*ethhdr))
     {
         goto drop;
     }
@@ -99,22 +101,20 @@ vlan_decapsulate(const struct context *c, struct buffer *buf)
         /* reject untagged frame */
         if (c->options.vlan_accept == VLAN_ONLY_TAGGED)
         {
-            msg(D_VLAN_DEBUG,
-                "dropping frame without vlan-tag (proto/len 0x%04x)",
+            msg(D_VLAN_DEBUG, "dropping frame without vlan-tag (proto/len 0x%04x)",
                 ntohs(ethhdr->proto));
             goto drop;
         }
 
         /* untagged frame is accepted and associated with the global VID */
-        msg(D_VLAN_DEBUG,
-            "assuming pvid for frame without vlan-tag, pvid: %u (proto/len 0x%04x)",
+        msg(D_VLAN_DEBUG, "assuming pvid for frame without vlan-tag, pvid: %u (proto/len 0x%04x)",
             c->options.vlan_pvid, ntohs(ethhdr->proto));
 
         return c->options.vlan_pvid;
     }
 
     /* tagged frame */
-    if (BLEN(buf) < sizeof(*vlanhdr))
+    if (BLENZ(buf) < sizeof(*vlanhdr))
     {
         goto drop;
     }
@@ -128,8 +128,8 @@ vlan_decapsulate(const struct context *c, struct buffer *buf)
             /* VLAN-tagged frame: drop packet */
             if (vid != 0)
             {
-                msg(D_VLAN_DEBUG, "dropping frame with vlan-tag, vid: %u (proto/len 0x%04x)",
-                    vid, ntohs(vlanhdr->proto));
+                msg(D_VLAN_DEBUG, "dropping frame with vlan-tag, vid: %u (proto/len 0x%04x)", vid,
+                    ntohs(vlanhdr->proto));
                 goto drop;
             }
 
@@ -151,8 +151,7 @@ vlan_decapsulate(const struct context *c, struct buffer *buf)
             /* here we have a proper VLAN tagged frame: perform decapsulation
              * and return embedded VID
              */
-            msg(D_VLAN_DEBUG,
-                "removing vlan-tag from frame: vid: %u, wrapped proto/len: 0x%04x",
+            msg(D_VLAN_DEBUG, "removing vlan-tag from frame: vid: %u, wrapped proto/len: 0x%04x",
                 vid, ntohs(vlanhdr->proto));
 
             /* save inner protocol to be restored later after decapsulation */
@@ -176,6 +175,10 @@ drop:
     return -1;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 /*
  * vlan_encapsulate - add 802.1q header and set the context related VID
  *
@@ -190,7 +193,7 @@ vlan_encapsulate(const struct context *c, struct buffer *buf)
     const struct openvpn_ethhdr *ethhdr;
     struct openvpn_8021qhdr *vlanhdr;
 
-    if (BLEN(buf) < sizeof(*ethhdr))
+    if (BLENZ(buf) < sizeof(*ethhdr))
     {
         goto drop;
     }
@@ -203,7 +206,7 @@ vlan_encapsulate(const struct context *c, struct buffer *buf)
          */
 
         /* Frame too small for header type? */
-        if (BLEN(buf) < sizeof(*vlanhdr))
+        if (BLENZ(buf) < sizeof(*vlanhdr))
         {
             goto drop;
         }
@@ -222,13 +225,12 @@ vlan_encapsulate(const struct context *c, struct buffer *buf)
         /* Untagged frame. */
 
         /* Not enough head room for VLAN tag? */
-        if (buf_reverse_capacity(buf) < SIZE_ETH_TO_8021Q_HDR)
+        if (buf_reverse_capacity(buf) < (int)SIZE_ETH_TO_8021Q_HDR)
         {
             goto drop;
         }
 
-        vlanhdr = (struct openvpn_8021qhdr *)buf_prepend(buf,
-                                                         SIZE_ETH_TO_8021Q_HDR);
+        vlanhdr = (struct openvpn_8021qhdr *)buf_prepend(buf, SIZE_ETH_TO_8021Q_HDR);
 
         /* Initialise VLAN/802.1q header.
          * Move the Eth header so to keep dst/src addresses the same and then
@@ -247,8 +249,8 @@ vlan_encapsulate(const struct context *c, struct buffer *buf)
     /* set the VID corresponding to the current context (client) */
     vlanhdr_set_vid(vlanhdr, c->options.vlan_pvid);
 
-    msg(D_VLAN_DEBUG, "tagging frame: vid %u (wrapping proto/len: %04x)",
-        c->options.vlan_pvid, vlanhdr->proto);
+    msg(D_VLAN_DEBUG, "tagging frame: vid %u (wrapping proto/len: %04x)", c->options.vlan_pvid,
+        vlanhdr->proto);
     return;
 
 drop:
@@ -270,13 +272,13 @@ vlan_is_tagged(const struct buffer *buf)
     const struct openvpn_8021qhdr *vlanhdr;
     uint16_t vid;
 
-    if (BLEN(buf) < sizeof(struct openvpn_8021qhdr))
+    if (BLENZ(buf) < sizeof(struct openvpn_8021qhdr))
     {
         /* frame too small to be VLAN-tagged */
         return false;
     }
 
-    vlanhdr = (const struct openvpn_8021qhdr *)BPTR(buf);
+    vlanhdr = (const struct openvpn_8021qhdr *)CBPTR(buf);
 
     if (ntohs(vlanhdr->tpid) != OPENVPN_ETH_P_8021Q)
     {
@@ -295,7 +297,7 @@ vlan_is_tagged(const struct buffer *buf)
 }
 
 void
-vlan_process_outgoing_tun(struct multi_context *m, struct multi_instance *mi)
+vlan_process_outgoing_tun(const struct multi_context *m, struct multi_instance *mi)
 {
     if (!m->top.options.vlan_tagging)
     {

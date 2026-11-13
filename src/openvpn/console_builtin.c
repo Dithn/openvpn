@@ -5,9 +5,9 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
  *  Copyright (C) 2014-2015  David Sommerseth <davids@redhat.com>
- *  Copyright (C) 2016-2018 David Sommerseth <davids@openvpn.net>
+ *  Copyright (C) 2016-2026 David Sommerseth <davids@openvpn.net>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -19,8 +19,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 /*
@@ -30,8 +29,6 @@
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#elif defined(_MSC_VER)
-#include "config-msvc.h"
 #endif
 
 #include "syshead.h"
@@ -40,8 +37,13 @@
 #include "buffer.h"
 #include "misc.h"
 
-#ifdef HAVE_TERMIOS_H
+#ifndef _WIN32
 #include <termios.h>
+#endif
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
 #endif
 
 #ifdef _WIN32
@@ -62,87 +64,81 @@
 static bool
 get_console_input_win32(const char *prompt, const bool echo, char *input, const int capacity)
 {
-    HANDLE in = INVALID_HANDLE_VALUE;
-    HANDLE err = INVALID_HANDLE_VALUE;
-    DWORD len = 0;
-
     ASSERT(prompt);
     ASSERT(input);
     ASSERT(capacity > 0);
 
     input[0] = '\0';
 
-    in = GetStdHandle(STD_INPUT_HANDLE);
-    err = get_orig_stderr();
-
-    if (in != INVALID_HANDLE_VALUE
-        && err != INVALID_HANDLE_VALUE
-        && !win32_service_interrupt(&win32_signal)
-        && WriteFile(err, prompt, strlen(prompt), &len, NULL))
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    int orig_stderr = get_orig_stderr(); /* guaranteed to be always valid */
+    if ((in == INVALID_HANDLE_VALUE) || win32_service_interrupt(&win32_signal)
+        || (_write(orig_stderr, prompt, (unsigned int)strlen(prompt)) == -1))
     {
-        bool is_console = (GetFileType(in) == FILE_TYPE_CHAR);
-        DWORD flags_save = 0;
-        int status = 0;
-        WCHAR *winput;
+        msg(M_WARN | M_ERRNO, "get_console_input_win32(): unexpected error");
+        return false;
+    }
 
-        if (is_console)
+    bool is_console = (GetFileType(in) == FILE_TYPE_CHAR);
+    DWORD flags_save = 0;
+    int status = 0;
+
+    if (is_console)
+    {
+        if (GetConsoleMode(in, &flags_save))
         {
-            if (GetConsoleMode(in, &flags_save))
+            DWORD flags = ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT;
+            if (echo)
             {
-                DWORD flags = ENABLE_LINE_INPUT | ENABLE_PROCESSED_INPUT;
-                if (echo)
-                {
-                    flags |= ENABLE_ECHO_INPUT;
-                }
-                SetConsoleMode(in, flags);
+                flags |= ENABLE_ECHO_INPUT;
             }
-            else
-            {
-                is_console = 0;
-            }
-        }
-
-        if (is_console)
-        {
-            winput = malloc(capacity * sizeof(WCHAR));
-            if (winput == NULL)
-            {
-                return false;
-            }
-
-            status = ReadConsoleW(in, winput, capacity, &len, NULL);
-            WideCharToMultiByte(CP_UTF8, 0, winput, len, input, capacity, NULL, NULL);
-            free(winput);
+            SetConsoleMode(in, flags);
         }
         else
         {
-            status = ReadFile(in, input, capacity, &len, NULL);
+            is_console = 0;
+        }
+    }
+
+    DWORD len = 0;
+
+    if (is_console)
+    {
+        WCHAR *winput = malloc(capacity * sizeof(WCHAR));
+        if (winput == NULL)
+        {
+            return false;
         }
 
-        string_null_terminate(input, (int)len, capacity);
-        chomp(input);
+        status = ReadConsoleW(in, winput, capacity, &len, NULL);
+        WideCharToMultiByte(CP_UTF8, 0, winput, len, input, capacity, NULL, NULL);
+        free(winput);
+    }
+    else
+    {
+        status = ReadFile(in, input, capacity, &len, NULL);
+    }
 
-        if (!echo)
-        {
-            WriteFile(err, "\r\n", 2, &len, NULL);
-        }
-        if (is_console)
-        {
-            SetConsoleMode(in, flags_save);
-        }
-        if (status && !win32_service_interrupt(&win32_signal))
-        {
-            return true;
-        }
+    string_null_terminate(input, (int)len, capacity);
+    chomp(input);
+
+    if (!echo)
+    {
+        _write(orig_stderr, "\r\n", 2);
+    }
+    if (is_console)
+    {
+        SetConsoleMode(in, flags_save);
+    }
+    if (status && !win32_service_interrupt(&win32_signal))
+    {
+        return true;
     }
 
     return false;
 }
 
-#endif   /* _WIN32 */
-
-
-#ifdef HAVE_TERMIOS_H
+#else
 
 /**
  * Open the current console TTY for read/write operations
@@ -169,7 +165,7 @@ open_tty(const bool write)
 /**
  * Closes the TTY FILE pointer, but only if it is not a stdin/stderr FILE object.
  *
- * @params fp     FILE pointer to close
+ * @param fp     FILE pointer to close
  *
  */
 static void
@@ -181,47 +177,49 @@ close_tty(FILE *fp)
     }
 }
 
-#endif   /* HAVE_TERMIOS_H */
+#endif
 
 
 /**
  *  Core function for getting input from console
  *
- *  @params prompt    The prompt to present to the user
- *  @params echo      Should the user see what is being typed
- *  @params input     Pointer to the buffer used to save the user input
- *  @params capacity  Size of the input buffer
+ *  @param prompt    The prompt to present to the user
+ *  @param echo      Should the user see what is being typed
+ *  @param input     Pointer to the buffer used to save the user input
+ *  @param capacity  Size of the input buffer
  *
  *  @returns Returns True if user input was gathered
  */
 static bool
 get_console_input(const char *prompt, const bool echo, char *input, const int capacity)
 {
-    bool ret = false;
     ASSERT(prompt);
     ASSERT(input);
     ASSERT(capacity > 0);
     input[0] = '\0';
 
-#if defined(_WIN32)
+#ifdef _WIN32
     return get_console_input_win32(prompt, echo, input, capacity);
-#elif defined(HAVE_TERMIOS_H)
+#else
     bool restore_tty = false;
+    bool ret = false;
     struct termios tty_tmp, tty_save;
 
     /* did we --daemon'ize before asking for passwords?
      * (in which case neither stdin or stderr are connected to a tty and
      * /dev/tty can not be open()ed anymore)
      */
-    if (!isatty(0) && !isatty(2) )
+    if (!isatty(0) && !isatty(2))
     {
-        int fd = open( "/dev/tty", O_RDWR );
+        int fd = open("/dev/tty", O_RDWR);
         if (fd < 0)
         {
-            msg(M_FATAL, "neither stdin nor stderr are a tty device and you have neither a "
+            msg(M_FATAL,
+                "neither stdin nor stderr are a tty device and you have neither a "
                 "controlling tty nor systemd - can't ask for '%s'.  If you used --daemon, "
                 "you need to use --askpass to make passphrase-protected keys work, and you "
-                "can not use --auth-nocache.", prompt );
+                "can not use --auth-nocache.",
+                prompt);
         }
         close(fd);
     }
@@ -236,7 +234,7 @@ get_console_input(const char *prompt, const bool echo, char *input, const int ca
     if (!echo && (tcgetattr(fileno(fp), &tty_tmp) == 0))
     {
         tty_save = tty_tmp;
-        tty_tmp.c_lflag &= ~(ECHO | ECHOE | ECHOK | ECHONL | ISIG);
+        tty_tmp.c_lflag &= ~(unsigned int)(ECHO | ECHOE | ECHOK | ECHONL | ISIG);
         restore_tty = (tcsetattr(fileno(fp), TCSAFLUSH, &tty_tmp) == 0);
     }
 
@@ -261,12 +259,9 @@ get_console_input(const char *prompt, const bool echo, char *input, const int ca
     }
 
     close_tty(fp);
-#else  /* if defined(_WIN32) */
-    msg(M_FATAL, "Sorry, but I can't get console input on this OS (%s)", prompt);
-#endif /* if defined(_WIN32) */
     return ret;
+#endif
 }
-
 
 /**
  * @copydoc query_user_exec()
@@ -289,8 +284,8 @@ query_user_exec_builtin(void)
     /* Loop through configured query_user slots */
     for (i = 0; i < QUERY_USER_NUMSLOTS && query_user[i].response != NULL; i++)
     {
-        if (!get_console_input(query_user[i].prompt, query_user[i].echo,
-                               query_user[i].response, query_user[i].response_len) )
+        if (!get_console_input(query_user[i].prompt, query_user[i].echo, query_user[i].response,
+                               query_user[i].response_len))
         {
             /* Force the final result state to failed on failure */
             ret = false;
@@ -299,3 +294,7 @@ query_user_exec_builtin(void)
 
     return ret;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif

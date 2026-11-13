@@ -17,8 +17,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef COMPAT_H
@@ -57,9 +56,23 @@ int daemon(int nochdir, int noclose);
 
 #endif
 
+#ifndef HAVE_STRLCPY
+size_t
+strlcpy(char *dest, const char *src, size_t maxlen);
+
+size_t
+strlcat(char *dest, const char *src, size_t maxlen);
+
+#endif
+
 #ifndef HAVE_STRSEP
 char *strsep(char **stringp, const char *delim);
 
+#endif
+
+#ifndef HAVE_STRTOK_R
+char *
+strtok_r(char *s, const char *delim, char **last);
 #endif
 
 #endif /* COMPAT_H */

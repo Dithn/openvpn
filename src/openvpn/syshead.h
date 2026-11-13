@@ -5,7 +5,7 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -17,8 +17,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef SYSHEAD_H
@@ -29,31 +28,59 @@
 
 /* branch prediction hints */
 #if defined(__GNUC__)
-#define likely(x)       __builtin_expect((x),1)
-#define unlikely(x)     __builtin_expect((x),0)
+#define likely(x)   __builtin_expect((x), 1)
+#define unlikely(x) __builtin_expect((x), 0)
 #else
-#define likely(x)      (x)
-#define unlikely(x)    (x)
+#define likely(x)   (x)
+#define unlikely(x) (x)
 #endif
 
 #ifdef _WIN32
 #include <windows.h>
 #include <winsock2.h>
 #include <tlhelp32.h>
-#define sleep(x) Sleep((x)*1000)
-#define random rand
-#define srandom srand
+#define sleep(x) Sleep((x) * 1000)
+#define random   rand
+#define srandom  srand
 #endif
 
-#ifdef _MSC_VER /* Visual Studio */
+/* if inttypes.h is included this breaks rc.exe when using the ClangCL
+ * Toolchain as it pulls in a inttypes.h variant for clang that rc.exe does
+ * not understand (#include_next preprocessor directive) */
+#if defined(_WIN32) && !defined(RC_INVOKED)
+#include <inttypes.h>
+typedef uint32_t in_addr_t;
+typedef uint16_t in_port_t;
+
+#define SIGHUP  1
+#define SIGINT  2
+#define SIGUSR1 10
+#define SIGUSR2 12
+#define SIGTERM 15
+#endif
+
+#if defined(_MSC_VER) && !defined(RC_INVOKED)
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#define strncasecmp strnicmp
+#define strcasecmp  _stricmp
+
+#define S_IRUSR _S_IREAD
+#define S_IWUSR _S_IWRITE
+#define R_OK    4
+#define W_OK    2
+#define X_OK    1
+#define F_OK    0
+#endif
+
+#if defined(_MSC_VER) && !defined(__clang__) /* Microsoft compiler */
 #define __func__ __FUNCTION__
 #define __attribute__(x)
-#include <inttypes.h>
 #endif
 
 #if defined(__APPLE__)
 #if __ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__ >= 1070
-#define __APPLE_USE_RFC_3542  1
+#define __APPLE_USE_RFC_3542 1
 #endif
 #endif
 
@@ -98,10 +125,6 @@
 
 #ifdef HAVE_FCNTL_H
 #include <fcntl.h>
-#endif
-
-#ifdef HAVE_SYS_FILE_H
-#include <sys/file.h>
 #endif
 
 /* These headers belong to C99 and should be always be present */
@@ -167,6 +190,12 @@
 #include <string.h>
 #endif
 
+#if defined(TARGET_HAIKU)
+#include <SupportDefs.h> /* uint32, etc */
+#include <net/if.h>      /* ifconf etc */
+#include <sys/sockio.h>  /* SIOCGRTTABLE, etc */
+#endif                   /* TARGET_HAIKU */
+
 #ifdef HAVE_ARPA_INET_H
 #include <arpa/inet.h>
 #endif
@@ -179,26 +208,19 @@
 #include <net/if_tap.h>
 #endif
 
-#if defined(TARGET_LINUX) || defined (TARGET_ANDROID)
+#if defined(TARGET_LINUX) || defined(TARGET_ANDROID)
 
-#ifdef HAVE_LINUX_IF_TUN_H
-#include <linux/if_tun.h>
+#define EXTENDED_SOCKET_ERROR_CAPABILITY 1
+
+#ifdef TARGET_LINUX
+#define ENABLE_FEATURE_TUN_PERSIST
 #endif
+
+#include <linux/if_tun.h>
+#include <linux/sockios.h>
 
 #ifdef HAVE_NETINET_IP_H
 #include <netinet/ip.h>
-#endif
-
-#ifdef HAVE_LINUX_SOCKIOS_H
-#include <linux/sockios.h>
-#endif
-
-#ifdef HAVE_LINUX_TYPES_H
-#include <linux/types.h>
-#endif
-
-#ifdef HAVE_LINUX_ERRQUEUE_H
-#include <linux/errqueue.h>
 #endif
 
 #ifdef HAVE_NETINET_TCP_H
@@ -222,10 +244,6 @@
 #include <sys/sockio.h>
 #endif
 
-#ifdef HAVE_NETINET_IN_SYSTM_H
-#include <netinet/in_systm.h>
-#endif
-
 #ifdef HAVE_NETINET_IP_H
 #include <netinet/ip.h>
 #endif
@@ -240,10 +258,6 @@
 
 #ifdef HAVE_SYS_UIO_H
 #include <sys/uio.h>
-#endif
-
-#ifdef HAVE_NETINET_IN_SYSTM_H
-#include <netinet/in_systm.h>
 #endif
 
 #ifdef HAVE_NETINET_IP_H
@@ -264,10 +278,6 @@
 
 #ifdef HAVE_SYS_UIO_H
 #include <sys/uio.h>
-#endif
-
-#ifdef HAVE_NETINET_IN_SYSTM_H
-#include <netinet/in_systm.h>
 #endif
 
 #ifdef HAVE_NETINET_IP_H
@@ -300,10 +310,6 @@
 
 #ifdef HAVE_SYS_UIO_H
 #include <sys/uio.h>
-#endif
-
-#ifdef HAVE_NETINET_IN_SYSTM_H
-#include <netinet/in_systm.h>
 #endif
 
 #ifdef HAVE_NETINET_IP_H
@@ -348,6 +354,10 @@ typedef int MIB_TCP_STATE;
 #include <sys/mman.h>
 #endif
 
+#ifndef _WIN32
+#include <sys/utsname.h>
+#endif
+
 /*
  * Pedantic mode is meant to accomplish lint-style program checking,
  * not to build a working executable.
@@ -369,19 +379,12 @@ typedef int MIB_TCP_STATE;
 #endif
 
 /*
- * Do we have the capability to report extended socket errors?
- */
-#if defined(HAVE_LINUX_TYPES_H) && defined(HAVE_LINUX_ERRQUEUE_H) && defined(HAVE_SOCK_EXTENDED_ERR) && defined(HAVE_MSGHDR) && defined(HAVE_CMSGHDR) && defined(CMSG_FIRSTHDR) && defined(CMSG_NXTHDR) && defined(IP_RECVERR) && defined(MSG_ERRQUEUE) && defined(SOL_IP)
-#define EXTENDED_SOCKET_ERROR_CAPABILITY 1
-#else
-#define EXTENDED_SOCKET_ERROR_CAPABILITY 0
-#endif
-
-/*
  * Does this platform support linux-style IP_PKTINFO
  * or bsd-style IP_RECVDSTADDR ?
  */
-#if ((defined(HAVE_IN_PKTINFO) && defined(IP_PKTINFO)) || defined(IP_RECVDSTADDR)) && defined(HAVE_MSGHDR) && defined(HAVE_CMSGHDR) && defined(CMSG_FIRSTHDR) && defined(CMSG_NXTHDR) && defined(HAVE_RECVMSG) && defined(HAVE_SENDMSG)
+#if ((defined(HAVE_IN_PKTINFO) && defined(IP_PKTINFO)) || defined(IP_RECVDSTADDR)) \
+    && defined(HAVE_MSGHDR) && defined(HAVE_CMSGHDR) && defined(CMSG_FIRSTHDR)     \
+    && defined(CMSG_NXTHDR) && defined(HAVE_RECVMSG) && defined(HAVE_SENDMSG)
 #define ENABLE_IP_PKTINFO 1
 #else
 #define ENABLE_IP_PKTINFO 0
@@ -400,14 +403,6 @@ typedef int MIB_TCP_STATE;
  */
 #ifndef HAVE_SA_FAMILY_T
 typedef unsigned short sa_family_t;
-#endif
-
-/*
- * Disable ESEC
- */
-#if 0
-#undef EXTENDED_SOCKET_ERROR_CAPABILITY
-#define EXTENDED_SOCKET_ERROR_CAPABILITY 0
 #endif
 
 /*
@@ -430,10 +425,10 @@ typedef unsigned short sa_family_t;
  * Directory separation char
  */
 #ifdef _WIN32
-#define PATH_SEPARATOR '\\'
+#define PATH_SEPARATOR     '\\'
 #define PATH_SEPARATOR_STR "\\"
 #else
-#define PATH_SEPARATOR '/'
+#define PATH_SEPARATOR     '/'
 #define PATH_SEPARATOR_STR "/"
 #endif
 
@@ -442,9 +437,11 @@ typedef unsigned short sa_family_t;
  */
 #ifdef _WIN32
 #define SOCKET_UNDEFINED (INVALID_SOCKET)
+#define SOCKET_PRINTF    "%" PRIxPTR
 typedef SOCKET socket_descriptor_t;
 #else
 #define SOCKET_UNDEFINED (-1)
+#define SOCKET_PRINTF    "%d"
 typedef int socket_descriptor_t;
 #endif
 
@@ -465,27 +462,12 @@ socket_defined(const socket_descriptor_t sd)
 /*
  * HTTPS port sharing capability
  */
-#if defined(ENABLE_PORT_SHARE) && defined(SCM_RIGHTS) && defined(HAVE_MSGHDR) && defined(HAVE_CMSGHDR) && defined(CMSG_FIRSTHDR) && defined(CMSG_NXTHDR) && defined(HAVE_RECVMSG) && defined(HAVE_SENDMSG)
+#if defined(ENABLE_PORT_SHARE) && defined(SCM_RIGHTS) && defined(HAVE_MSGHDR)  \
+    && defined(HAVE_CMSGHDR) && defined(CMSG_FIRSTHDR) && defined(CMSG_NXTHDR) \
+    && defined(HAVE_RECVMSG) && defined(HAVE_SENDMSG)
 #define PORT_SHARE 1
 #else
 #define PORT_SHARE 0
-#endif
-
-#ifdef ENABLE_CRYPTO_MBEDTLS
-#define ENABLE_PREDICTION_RESISTANCE
-#endif /* ENABLE_CRYPTO_MBEDTLS */
-
-/*
- * Enable packet filter?
- */
-#if defined(ENABLE_PF) && defined(ENABLE_PLUGIN) && defined(HAVE_STAT)
-#define PLUGIN_PF
-#endif
-#if defined(ENABLE_PF) && defined(ENABLE_MANAGEMENT)
-#define MANAGEMENT_PF
-#endif
-#if !defined(PLUGIN_PF) && !defined(MANAGEMENT_PF)
-#undef ENABLE_PF
 #endif
 
 /*
@@ -498,11 +480,6 @@ socket_defined(const socket_descriptor_t sd)
 #endif
 
 /*
- * Should we include NTLM proxy functionality
- */
-#define NTLM 1
-
-/*
  * Should we include proxy digest auth functionality
  */
 #define PROXY_DIGEST_AUTH 1
@@ -510,8 +487,7 @@ socket_defined(const socket_descriptor_t sd)
 /*
  * Do we have CryptoAPI capability?
  */
-#if defined(_WIN32) && defined(ENABLE_CRYPTO_OPENSSL) && \
-        !defined(ENABLE_CRYPTO_WOLFSSL)
+#if defined(_WIN32) && defined(ENABLE_CRYPTO_OPENSSL) && !defined(ENABLE_CRYPTO_WOLFSSL)
 #define ENABLE_CRYPTOAPI
 #endif
 
@@ -538,16 +514,14 @@ socket_defined(const socket_descriptor_t sd)
 /*
  * Compression support
  */
-#if defined(ENABLE_LZO) || defined(ENABLE_LZ4)    \
-    || defined(ENABLE_COMP_STUB)
+#if defined(ENABLE_LZO) || defined(ENABLE_LZ4) || defined(ENABLE_COMP_STUB)
 #define USE_COMP
 #endif
 
-/*
- * Enable --memstats option
- */
-#ifdef TARGET_LINUX
-#define ENABLE_MEMSTATS
+#ifdef _MSC_VER
+#ifndef PATH_MAX
+#define PATH_MAX MAX_PATH
+#endif
 #endif
 
 #endif /* ifndef SYSHEAD_H */

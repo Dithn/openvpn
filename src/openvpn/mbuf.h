@@ -5,7 +5,7 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -17,8 +17,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifndef MBUF_H
@@ -36,14 +35,16 @@
 
 struct multi_instance;
 
-#define MBUF_INDEX(head, offset, size) (((head) + (offset)) & ((size)-1))
+#define MBUF_INDEX(head, offset, size) (((head) + (offset)) & ((size) - 1))
+/* limited by adjust_power_of_2 and array_mult_safe */
+#define MBUF_SIZE_MAX                  (ALLOC_SIZE_MAX / sizeof(struct mbuf_item))
 
 struct mbuf_buffer
 {
     struct buffer buf;
     int refcount;
 
-#define MF_UNICAST (1<<0)
+#define MF_UNICAST (1 << 0)
     unsigned int flags;
 };
 
@@ -74,7 +75,7 @@ void mbuf_add_item(struct mbuf_set *ms, const struct mbuf_item *item);
 
 bool mbuf_extract_item(struct mbuf_set *ms, struct mbuf_item *item);
 
-void mbuf_dereference_instance(struct mbuf_set *ms, struct multi_instance *mi);
+void mbuf_dereference_instance(struct mbuf_set *ms, const struct multi_instance *mi);
 
 static inline bool
 mbuf_defined(const struct mbuf_set *ms)
@@ -91,7 +92,7 @@ mbuf_len(const struct mbuf_set *ms)
 static inline int
 mbuf_maximum_queued(const struct mbuf_set *ms)
 {
-    return (int) ms->max_queued;
+    return (int)ms->max_queued;
 }
 
 struct multi_instance *mbuf_peek_dowork(struct mbuf_set *ms);

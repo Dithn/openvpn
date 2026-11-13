@@ -5,7 +5,7 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -17,14 +17,11 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#elif defined(_MSC_VER)
-#include "config-msvc.h"
 #endif
 
 #include "syshead.h"
@@ -42,67 +39,52 @@
 size_t
 array_mult_safe(const size_t m1, const size_t m2, const size_t extra)
 {
-    const size_t limit = 0xFFFFFFFF;
-    unsigned long long res = (unsigned long long)m1 * (unsigned long long)m2 + (unsigned long long)extra;
-    if (unlikely(m1 > limit) || unlikely(m2 > limit) || unlikely(extra > limit) || unlikely(res > (unsigned long long)limit))
+    const size_t limit = ALLOC_SIZE_MAX;
+    unsigned long long res =
+        (unsigned long long)m1 * (unsigned long long)m2 + (unsigned long long)extra;
+    if (unlikely(m1 > limit) || unlikely(m2 > limit) || unlikely(extra > limit)
+        || unlikely(res > limit))
     {
         msg(M_FATAL, "attempted allocation of excessively large array");
     }
-    return (size_t) res;
+    return (size_t)res;
 }
 
 void
 buf_size_error(const size_t size)
 {
-    msg(M_FATAL, "fatal buffer size error, size=%lu", (unsigned long)size);
+    msg(M_FATAL, "fatal buffer size error, size=%zu", size);
 }
 
 struct buffer
-#ifdef DMALLOC
-alloc_buf_debug(size_t size, const char *file, int line)
-#else
 alloc_buf(size_t size)
-#endif
 {
     struct buffer buf;
+    CLEAR(buf);
 
     if (!buf_size_valid(size))
     {
         buf_size_error(size);
     }
-    buf.capacity = (int)size;
-    buf.offset = 0;
-    buf.len = 0;
-#ifdef DMALLOC
-    buf.data = openvpn_dmalloc(file, line, size);
-#else
     buf.data = calloc(1, size);
-#endif
+    buf.capacity = (int)size;
     check_malloc_return(buf.data);
 
     return buf;
 }
 
 struct buffer
-#ifdef DMALLOC
-alloc_buf_gc_debug(size_t size, struct gc_arena *gc, const char *file, int line)
-#else
 alloc_buf_gc(size_t size, struct gc_arena *gc)
-#endif
 {
     struct buffer buf;
+    CLEAR(buf);
+
     if (!buf_size_valid(size))
     {
         buf_size_error(size);
     }
+    buf.data = gc_malloc(size, false, gc);
     buf.capacity = (int)size;
-    buf.offset = 0;
-    buf.len = 0;
-#ifdef DMALLOC
-    buf.data = (uint8_t *) gc_malloc_debug(size, false, gc, file, line);
-#else
-    buf.data = (uint8_t *) gc_malloc(size, false, gc);
-#endif
     if (size)
     {
         *buf.data = 0;
@@ -110,24 +92,29 @@ alloc_buf_gc(size_t size, struct gc_arena *gc)
     return buf;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 struct buffer
-#ifdef DMALLOC
+#ifdef BUF_INIT_TRACKING
 clone_buf_debug(const struct buffer *buf, const char *file, int line)
 #else
 clone_buf(const struct buffer *buf)
 #endif
 {
     struct buffer ret;
+    ret.data = malloc(buf->capacity);
     ret.capacity = buf->capacity;
+    check_malloc_return(ret.data);
     ret.offset = buf->offset;
     ret.len = buf->len;
-#ifdef DMALLOC
-    ret.data = (uint8_t *) openvpn_dmalloc(file, line, buf->capacity);
-#else
-    ret.data = (uint8_t *) malloc(buf->capacity);
+#ifdef BUF_INIT_TRACKING
+    ret.debug_file = buf->debug_file;
+    ret.debug_line = buf->debug_line;
 #endif
-    check_malloc_return(ret.data);
-    memcpy(BPTR(&ret), BPTR(buf), BLEN(buf));
+    memcpy(BPTR(&ret), CBPTR(buf), BLENZ(buf));
     return ret;
 }
 
@@ -141,6 +128,7 @@ buf_init_debug(struct buffer *buf, int offset, const char *file, int line)
     return buf_init_dowork(buf, offset);
 }
 
+#ifdef VERIFY_ALIGNMENT
 static inline int
 buf_debug_line(const struct buffer *buf)
 {
@@ -152,8 +140,9 @@ buf_debug_file(const struct buffer *buf)
 {
     return buf->debug_file;
 }
+#endif
 
-#else  /* ifdef BUF_INIT_TRACKING */
+#else /* ifdef BUF_INIT_TRACKING */
 
 #define buf_debug_line(buf) 0
 #define buf_debug_file(buf) "[UNDEF]"
@@ -178,7 +167,7 @@ buf_assign(struct buffer *dest, const struct buffer *src)
     {
         return false;
     }
-    return buf_write(dest, BPTR(src), BLEN(src));
+    return buf_write(dest, CBPTR(src), BLENZ(src));
 }
 
 void
@@ -198,7 +187,7 @@ free_buf_gc(struct buffer *buf, struct gc_arena *gc)
         while (*e)
         {
             /* check if this object is the one we want to delete */
-            if ((uint8_t *)(*e + 1) == buf->data)
+            if ((uintptr_t)*e + sizeof(struct gc_entry) == (uintptr_t)buf->data)
             {
                 struct gc_entry *to_delete = *e;
 
@@ -241,21 +230,20 @@ buf_sub(struct buffer *buf, int size, bool prepend)
 bool
 buf_printf(struct buffer *buf, const char *format, ...)
 {
-    int ret = false;
+    bool ret = false;
     if (buf_defined(buf))
     {
-        va_list arglist;
-        uint8_t *ptr = BEND(buf);
+        char *ptr = (char *)BEND(buf);
         int cap = buf_forward_capacity(buf);
 
-        if (cap > 0)
+        if (cap > 1) /* can write more than \0 */
         {
             int stat;
+            va_list arglist;
             va_start(arglist, format);
-            stat = vsnprintf((char *)ptr, cap, format, arglist);
+            stat = vsnprintf(ptr, cap, format, arglist);
             va_end(arglist);
-            *(buf->data + buf->capacity - 1) = 0; /* windows vsnprintf needs this */
-            buf->len += (int) strlen((char *)ptr);
+            buf->len += (int)strnlen(ptr, cap);
             if (stat >= 0 && stat < cap)
             {
                 ret = true;
@@ -265,70 +253,17 @@ buf_printf(struct buffer *buf, const char *format, ...)
     return ret;
 }
 
-bool
+void
 buf_puts(struct buffer *buf, const char *str)
 {
-    int ret = false;
-    uint8_t *ptr = BEND(buf);
+    char *ptr = (char *)BEND(buf);
     int cap = buf_forward_capacity(buf);
-    if (cap > 0)
+    if (cap > 1) /* can write more than \0 */
     {
-        strncpynt((char *)ptr,str, cap);
-        *(buf->data + buf->capacity - 1) = 0; /* windows vsnprintf needs this */
-        buf->len += (int) strlen((char *)ptr);
-        ret = true;
+        int str_len = (int)strlcpy(ptr, str, cap);
+        buf->len += (str_len < cap) ? str_len : cap - 1;
     }
-    return ret;
 }
-
-
-/*
- * This is necessary due to certain buggy implementations of snprintf,
- * that don't guarantee null termination for size > 0.
- *
- * Return false on overflow.
- *
- * This functionality is duplicated in src/openvpnserv/common.c
- * Any modifications here should be done to the other place as well.
- */
-
-bool
-openvpn_snprintf(char *str, size_t size, const char *format, ...)
-{
-    va_list arglist;
-    int len = -1;
-    if (size > 0)
-    {
-        va_start(arglist, format);
-        len = vsnprintf(str, size, format, arglist);
-        va_end(arglist);
-        str[size - 1] = 0;
-    }
-    return (len >= 0 && len < size);
-}
-
-/*
- * openvpn_swprintf() is currently only used by Windows code paths
- * and when enabled for all platforms it will currently break older
- * OpenBSD versions lacking vswprintf(3) support in their libc.
- */
-
-#ifdef _WIN32
-bool
-openvpn_swprintf(wchar_t *const str, const size_t size, const wchar_t *const format, ...)
-{
-    va_list arglist;
-    int len = -1;
-    if (size > 0)
-    {
-        va_start(arglist, format);
-        len = vswprintf(str, size, format, arglist);
-        va_end(arglist);
-        str[size - 1] = L'\0';
-    }
-    return (len >= 0 && len < size);
-}
-#endif
 
 /*
  * write a string to the end of a buffer that was
@@ -339,29 +274,11 @@ buf_catrunc(struct buffer *buf, const char *str)
 {
     if (buf_forward_capacity(buf) <= 1)
     {
-        int len = (int) strlen(str) + 1;
-        if (len < buf_forward_capacity_total(buf))
+        size_t len = strlen(str) + 1;
+        if (buf_size_valid(len) && (int)len < buf_forward_capacity_total(buf))
         {
-            strncpynt((char *)(buf->data + buf->capacity - len), str, len);
+            memcpy(buf->data + buf->capacity - len, str, len);
         }
-    }
-}
-
-/*
- * convert a multi-line output to one line
- */
-void
-convert_to_one_line(struct buffer *buf)
-{
-    uint8_t *cp = BPTR(buf);
-    int len = BLEN(buf);
-    while (len--)
-    {
-        if (*cp == '\n')
-        {
-            *cp = '|';
-        }
-        ++cp;
     }
 }
 
@@ -369,15 +286,14 @@ bool
 buffer_write_file(const char *filename, const struct buffer *buf)
 {
     bool ret = false;
-    int fd = platform_open(filename, O_CREAT | O_TRUNC | O_WRONLY,
-                           S_IRUSR | S_IWUSR);
+    int fd = platform_open(filename, O_CREAT | O_TRUNC | O_WRONLY, S_IRUSR | S_IWUSR);
     if (fd == -1)
     {
         msg(M_ERRNO, "Cannot open file '%s' for write", filename);
         return false;
     }
 
-    const int size = write(fd, BPTR(buf), BLEN(buf));
+    const ssize_t size = write(fd, CBPTR(buf), (unsigned int)BLEN(buf));
     if (size != BLEN(buf))
     {
         msg(M_ERRNO, "Write error on file '%s'", filename);
@@ -394,44 +310,69 @@ cleanup:
     return ret;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 /*
  * Garbage collection
  */
 
 void *
-#ifdef DMALLOC
-gc_malloc_debug(size_t size, bool clear, struct gc_arena *a, const char *file, int line)
-#else
 gc_malloc(size_t size, bool clear, struct gc_arena *a)
-#endif
 {
     void *ret;
     if (a)
     {
         struct gc_entry *e;
-#ifdef DMALLOC
-        e = (struct gc_entry *) openvpn_dmalloc(file, line, size + sizeof(struct gc_entry));
-#else
-        e = (struct gc_entry *) malloc(size + sizeof(struct gc_entry));
-#endif
+        e = (struct gc_entry *)malloc(size + sizeof(struct gc_entry));
         check_malloc_return(e);
-        ret = (char *) e + sizeof(struct gc_entry);
+        ret = (char *)e + sizeof(struct gc_entry);
         e->next = a->list;
         a->list = e;
     }
     else
     {
-#ifdef DMALLOC
-        ret = openvpn_dmalloc(file, line, size);
-#else
         ret = malloc(size);
-#endif
         check_malloc_return(ret);
     }
 #ifndef ZERO_BUFFER_ON_ALLOC
     if (clear)
 #endif
-    memset(ret, 0, size);
+        memset(ret, 0, size);
+    return ret;
+}
+
+void *
+gc_realloc(void *ptr, size_t size, struct gc_arena *a)
+{
+    void *ret = realloc(ptr, size);
+    check_malloc_return(ret);
+    if (a)
+    {
+        if (ptr && ptr != ret)
+        {
+            /* find the old entry and modify it if realloc changed
+             * the pointer */
+            struct gc_entry_special *e = NULL;
+            for (e = a->list_special; e != NULL; e = e->next)
+            {
+                if (e->addr == ptr)
+                {
+                    break;
+                }
+            }
+            ASSERT(e);
+            ASSERT(e->addr == ptr);
+            e->addr = ret;
+        }
+        else if (!ptr)
+        {
+            /* sets e->addr to newptr */
+            gc_addspecial(ret, free, a);
+        }
+    }
+
     return ret;
 }
 
@@ -475,11 +416,7 @@ gc_addspecial(void *addr, void (*free_function)(void *), struct gc_arena *a)
 {
     ASSERT(a);
     struct gc_entry_special *e;
-#ifdef DMALLOC
-    e = (struct gc_entry_special *) openvpn_dmalloc(file, line, sizeof(struct gc_entry_special));
-#else
-    e = (struct gc_entry_special *) malloc(sizeof(struct gc_entry_special));
-#endif
+    e = (struct gc_entry_special *)malloc(sizeof(struct gc_entry_special));
     check_malloc_return(e);
     e->free_fnc = free_function;
     e->addr = addr;
@@ -511,23 +448,27 @@ gc_transfer(struct gc_arena *dest, struct gc_arena *src)
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 /*
  * Hex dump -- Output a binary buffer to a hex string and return it.
  */
 
 char *
-format_hex_ex(const uint8_t *data, int size, int maxoutput,
-              unsigned int space_break_flags, const char *separator,
-              struct gc_arena *gc)
+format_hex_ex(const uint8_t *data, size_t size, size_t maxoutput, unsigned int space_break_flags,
+              const char *separator, struct gc_arena *gc)
 {
     const size_t bytes_per_hexblock = space_break_flags & FHE_SPACE_BREAK_MASK;
     const size_t separator_len = separator ? strlen(separator) : 0;
-    static_assert(INT_MAX <= SIZE_MAX, "Code assumes INT_MAX <= SIZE_MAX");
-    const size_t out_len = maxoutput > 0 ? maxoutput :
-                           ((size * 2) + ((size / bytes_per_hexblock) * separator_len) + 2);
+    const size_t out_len = maxoutput > 0
+                               ? maxoutput
+                               : ((size * 2) + ((size / bytes_per_hexblock) * separator_len) + 2);
 
     struct buffer out = alloc_buf_gc(out_len, gc);
-    for (int i = 0; i < size; ++i)
+    for (size_t i = 0; i < size; ++i)
     {
         if (separator && i && !(i % bytes_per_hexblock))
         {
@@ -568,13 +509,13 @@ buf_rmtail(struct buffer *buf, uint8_t remove)
 void
 buf_null_terminate(struct buffer *buf)
 {
-    char *last = (char *) BLAST(buf);
+    const uint8_t *last = BLAST(buf);
     if (last && *last == '\0') /* already terminated? */
     {
         return;
     }
 
-    if (!buf_safe(buf, 1))   /* make space for trailing null */
+    if (!buf_safe(buf, 1)) /* make space for trailing null */
     {
         buf_inc_len(buf, -1);
     }
@@ -591,12 +532,12 @@ buf_chomp(struct buffer *buf)
 {
     while (true)
     {
-        char *last = (char *) BLAST(buf);
+        const uint8_t *last = BLAST(buf);
         if (!last)
         {
             break;
         }
-        if (char_class(*last, CC_CRLF|CC_NULL))
+        if (char_class(*last, CC_CRLF | CC_NULL))
         {
             if (!buf_inc_len(buf, -1))
             {
@@ -610,6 +551,10 @@ buf_chomp(struct buffer *buf)
     }
     buf_null_terminate(buf);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 const char *
 skip_leading_whitespace(const char *str)
@@ -626,6 +571,7 @@ skip_leading_whitespace(const char *str)
     return str;
 }
 
+#ifdef _WIN32
 /*
  * like buf_null_terminate, but operate on strings
  */
@@ -642,6 +588,7 @@ string_null_terminate(char *str, int len, int capacity)
         *(str + len - 1) = '\0';
     }
 }
+#endif
 
 /*
  * Remove trailing \r and \n chars.
@@ -658,32 +605,18 @@ chomp(char *str)
 void
 rm_trailing_chars(char *str, const char *what_to_delete)
 {
-    bool modified;
-    do
+    size_t len = strlen(str);
+    while (len > 0 && strchr(what_to_delete, str[len - 1]) != NULL)
     {
-        const size_t len = strlen(str);
-        modified = false;
-        if (len > 0)
-        {
-            char *cp = str + (len - 1);
-            if (strchr(what_to_delete, *cp) != NULL)
-            {
-                *cp = '\0';
-                modified = true;
-            }
-        }
-    } while (modified);
+        str[--len] = '\0';
+    }
 }
 
 /*
  * Allocate a string
  */
 char *
-#ifdef DMALLOC
-string_alloc_debug(const char *str, struct gc_arena *gc, const char *file, int line)
-#else
 string_alloc(const char *str, struct gc_arena *gc)
-#endif
 {
     if (str)
     {
@@ -692,11 +625,7 @@ string_alloc(const char *str, struct gc_arena *gc)
 
         if (gc)
         {
-#ifdef DMALLOC
-            ret = (char *) gc_malloc_debug(n, false, gc, file, line);
-#else
-            ret = (char *) gc_malloc(n, false, gc);
-#endif
+            ret = gc_malloc(n, false, gc);
         }
         else
         {
@@ -704,11 +633,7 @@ string_alloc(const char *str, struct gc_arena *gc)
              * that the caller cleans up afterwards.  This is coherent with the
              * earlier behaviour when gc_malloc() would be called with gc == NULL
              */
-#ifdef DMALLOC
-            ret = openvpn_dmalloc(file, line, n);
-#else
             ret = calloc(1, n);
-#endif
             check_malloc_return(ret);
         }
         memcpy(ret, str, n);
@@ -741,7 +666,7 @@ string_array_len(const char **array)
     int i = 0;
     if (array)
     {
-        while (array[i])
+        for (; *array; ++array)
         {
             ++i;
         }
@@ -754,13 +679,9 @@ print_argv(const char **p, struct gc_arena *gc, const unsigned int flags)
 {
     struct buffer out = alloc_buf_gc(256, gc);
     int i = 0;
-    for (;; )
+    for (; *p; ++p)
     {
-        const char *cp = *p++;
-        if (!cp)
-        {
-            break;
-        }
+        const char *cp = *p;
         if (i)
         {
             buf_printf(&out, " ");
@@ -782,21 +703,14 @@ print_argv(const char **p, struct gc_arena *gc, const unsigned int flags)
  * Allocate a string inside a buffer
  */
 struct buffer
-#ifdef DMALLOC
-string_alloc_buf_debug(const char *str, struct gc_arena *gc, const char *file, int line)
-#else
 string_alloc_buf(const char *str, struct gc_arena *gc)
-#endif
 {
     struct buffer buf;
 
     ASSERT(str);
 
-#ifdef DMALLOC
-    buf_set_read(&buf, (uint8_t *) string_alloc_debug(str, gc, file, line), strlen(str) + 1);
-#else
-    buf_set_read(&buf, (uint8_t *) string_alloc(str, gc), strlen(str) + 1);
-#endif
+    const char *copy = string_alloc(str, gc);
+    buf_set_read(&buf, (const uint8_t *)copy, strlen(str) + 1);
 
     if (buf.len > 0) /* Don't count trailing '\0' as part of length */
     {
@@ -814,19 +728,24 @@ bool
 buf_string_match_head_str(const struct buffer *src, const char *match)
 {
     const size_t size = strlen(match);
-    if (size < 0 || size > src->len)
+    if (!buf_size_valid(size) || (int)size > src->len)
     {
         return false;
     }
-    return memcmp(BPTR(src), match, size) == 0;
+    return memcmp(CBPTR(src), match, size) == 0;
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
 
 bool
 buf_string_compare_advance(struct buffer *src, const char *match)
 {
     if (buf_string_match_head_str(src, match))
     {
-        buf_advance(src, (int)strlen(match));
+        buf_advance(src, strlen(match));
         return true;
     }
     else
@@ -834,6 +753,10 @@ buf_string_compare_advance(struct buffer *src, const char *match)
         return false;
     }
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 int
 buf_substring_len(const struct buffer *buf, int delim)
@@ -868,25 +791,29 @@ buf_parse(struct buffer *buf, const int delim, char *line, const int size)
 
     do
     {
-        c = buf_read_u8(buf);
+        c = buf_peek_u8(buf);
         if (c < 0)
         {
             eol = true;
+            line[n] = 0;
+            break;
         }
-        if (c <= 0 || c == delim)
+        if (c == delim)
         {
-            c = 0;
+            buf_advance(buf, 1);
+            line[n] = 0;
+            break;
         }
-        if (n >= size)
+        if (n >= (size - 1))
         {
             break;
         }
-        line[n++] = c;
-    }
-    while (c);
+        buf_advance(buf, 1);
+        line[n++] = (char)c;
+    } while (c);
 
-    line[size-1] = '\0';
-    return !(eol && !strlen(line));
+    line[size - 1] = '\0';
+    return !(eol && line[0] == '\0');
 }
 
 /*
@@ -909,6 +836,14 @@ np(const char *str)
  * Classify and mutate strings based on character types.
  */
 
+/* Note 1: This functions depends on getting an unsigned
+   char. Both the is*() functions and our own checks expect it
+   this way.
+   Note 2: For CC_PRINT we just accept everything >= 32, so
+   if we ingest non-ASCII UTF-8 we will classify it as
+   printable since it will be >= 128. Other encodings are
+   not officially supported.
+*/
 bool
 char_class(const unsigned char c, const unsigned int flags)
 {
@@ -946,7 +881,8 @@ char_class(const unsigned char c, const unsigned int flags)
     {
         return true;
     }
-    if ((flags & CC_PRINT) && (c >= 32 && c != 127)) /* allow ascii non-control and UTF-8, consider DEL to be a control */
+    /* allow ascii non-control and UTF-8, consider DEL to be a control */
+    if ((flags & CC_PRINT) && (c >= 32 && c != 127))
     {
         return true;
     }
@@ -1016,11 +952,11 @@ char_class(const unsigned char c, const unsigned int flags)
     {
         return true;
     }
-    if ((flags & CC_AT) && c == '@')
+    if ((flags & CC_PERCENT) && c == '%')
     {
         return true;
     }
-    if ((flags & CC_EQUAL) && c == '=')
+    if ((flags & CC_EXCLAMATION) && c == '!')
     {
         return true;
     }
@@ -1048,20 +984,29 @@ char_class(const unsigned char c, const unsigned int flags)
     return false;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 static inline bool
 char_inc_exc(const char c, const unsigned int inclusive, const unsigned int exclusive)
 {
-    return char_class(c, inclusive) && !char_class(c, exclusive);
+    return char_class((unsigned char)c, inclusive)
+           && !char_class((unsigned char)c, exclusive);
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 bool
 string_class(const char *str, const unsigned int inclusive, const unsigned int exclusive)
 {
-    char c;
     ASSERT(str);
-    while ((c = *str++))
+    for (; *str; ++str)
     {
-        if (!char_inc_exc(c, inclusive, exclusive))
+        if (!char_inc_exc(*str, inclusive, exclusive))
         {
             return false;
         }
@@ -1074,12 +1019,14 @@ string_class(const char *str, const unsigned int inclusive, const unsigned int e
  * Guaranteed to not increase string length.
  */
 bool
-string_mod(char *str, const unsigned int inclusive, const unsigned int exclusive, const char replace)
+string_mod(char *str, const unsigned int inclusive, const unsigned int exclusive,
+           const char replace)
 {
-    const char *in = str;
-    bool ret = true;
-
     ASSERT(str);
+
+    char *out = str;
+    const char *in = out;
+    bool ret = true;
 
     while (true)
     {
@@ -1093,24 +1040,38 @@ string_mod(char *str, const unsigned int inclusive, const unsigned int exclusive
             }
             if (c)
             {
-                *str++ = c;
+                *out++ = c;
             }
         }
         else
         {
-            *str = '\0';
+            *out = '\0';
             break;
         }
     }
     return ret;
 }
 
+bool
+string_check_buf(const struct buffer *buf, const unsigned int inclusive, const unsigned int exclusive)
+{
+    ASSERT(buf);
+
+    for (int i = 0; i < BLEN(buf); i++)
+    {
+        char c = CBSTR(buf)[i];
+
+        if (!char_inc_exc(c, inclusive, exclusive))
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 const char *
-string_mod_const(const char *str,
-                 const unsigned int inclusive,
-                 const unsigned int exclusive,
-                 const char replace,
-                 struct gc_arena *gc)
+string_mod_const(const char *str, const unsigned int inclusive, const unsigned int exclusive,
+                 const char replace, struct gc_arena *gc)
 {
     if (str)
     {
@@ -1142,25 +1103,60 @@ string_replace_leading(char *str, const char match, const char replace)
     }
 }
 
-#ifdef CHARACTER_CLASS_DEBUG
-
-#define CC_INCLUDE    (CC_PRINT)
-#define CC_EXCLUDE    (0)
-#define CC_REPLACE    ('.')
-
-void
-character_class_debug(void)
+bool
+string_defined_equal(const char *s1, const char *s2)
 {
-    char buf[256];
-
-    while (fgets(buf, sizeof(buf), stdin) != NULL)
+    if (s1 && s2)
     {
-        string_mod(buf, CC_INCLUDE, CC_EXCLUDE, CC_REPLACE);
-        printf("%s", buf);
+        return !strcmp(s1, s2);
+    }
+    else
+    {
+        return false;
     }
 }
 
-#endif
+bool
+streqnull(const char *a, const char *b)
+{
+    if (a == NULL && b == NULL)
+    {
+        return true;
+    }
+    else if (a == NULL || b == NULL)
+    {
+        return false;
+    }
+    else
+    {
+        return streq(a, b);
+    }
+}
+
+char *
+string_substitute(const char *src, char from, char to, struct gc_arena *gc)
+{
+    char *ret = gc_malloc(strlen(src) + 1, true, gc);
+    char *dest = ret;
+
+    for (; *src; ++src)
+    {
+        *dest++ = (*src == from) ? to : *src;
+    }
+    *dest = '\0';
+    return ret;
+}
+
+bool
+checked_snprintf(char *str, size_t size, const char *format, ...)
+{
+    va_list arglist;
+    va_start(arglist, format);
+    ASSERT(size < INT_MAX);
+    int len = vsnprintf(str, size, format, arglist);
+    va_end(arglist);
+    return (len >= 0 && len < (ssize_t)size);
+}
 
 #ifdef VERIFY_ALIGNMENT
 void
@@ -1168,24 +1164,17 @@ valign4(const struct buffer *buf, const char *file, const int line)
 {
     if (buf && buf->len)
     {
-        int msglevel = D_ALIGN_DEBUG;
-        const unsigned int u = (unsigned int) BPTR(buf);
+        msglvl_t msglevel = D_ALIGN_DEBUG;
+        const uintptr_t u = (uintptr_t)CBPTR(buf);
 
-        if (u & (PAYLOAD_ALIGN-1))
+        if (u & (PAYLOAD_ALIGN - 1))
         {
             msglevel = D_ALIGN_ERRORS;
         }
 
         msg(msglevel, "%sAlignment at %s/%d ptr=" ptr_format " OLC=%d/%d/%d I=%s/%d",
-            (msglevel == D_ALIGN_ERRORS) ? "ERROR: " : "",
-            file,
-            line,
-            (ptr_type)buf->data,
-            buf->offset,
-            buf->len,
-            buf->capacity,
-            buf_debug_file(buf),
-            buf_debug_line(buf));
+            (msglevel == D_ALIGN_ERRORS) ? "ERROR: " : "", file, line, (ptr_type)buf->data,
+            buf->offset, buf->len, buf->capacity, buf_debug_file(buf), buf_debug_line(buf));
     }
 }
 #endif /* ifdef VERIFY_ALIGNMENT */
@@ -1194,11 +1183,10 @@ valign4(const struct buffer *buf, const char *file, const int line)
  * struct buffer_list
  */
 struct buffer_list *
-buffer_list_new(const int max_size)
+buffer_list_new(void)
 {
     struct buffer_list *ret;
     ALLOC_OBJ_CLEAR(ret, struct buffer_list);
-    ret->max_size = max_size;
     ret->size = 0;
     return ret;
 }
@@ -1216,7 +1204,7 @@ buffer_list_free(struct buffer_list *ol)
 bool
 buffer_list_defined(const struct buffer_list *ol)
 {
-    return ol && ol->head != NULL;
+    return ol && ol->head != NULL && ol->size > 0;
 }
 
 void
@@ -1240,10 +1228,10 @@ buffer_list_push(struct buffer_list *ol, const char *str)
     if (str)
     {
         const size_t len = strlen((const char *)str);
-        struct buffer_entry *e = buffer_list_push_data(ol, str, len+1);
+        struct buffer_entry *e = buffer_list_push_data(ol, str, len + 1);
         if (e)
         {
-            e->buf.len = (int)len; /* Don't count trailing '\0' as part of length */
+            e->buf.len--; /* Don't count trailing '\0' as part of length */
         }
     }
 }
@@ -1252,7 +1240,7 @@ struct buffer_entry *
 buffer_list_push_data(struct buffer_list *ol, const void *data, size_t size)
 {
     struct buffer_entry *e = NULL;
-    if (data && (!ol->max_size || ol->size < ol->max_size))
+    if (data)
     {
         ALLOC_OBJ_CLEAR(e, struct buffer_entry);
 
@@ -1269,6 +1257,7 @@ buffer_list_push_data(struct buffer_list *ol, const void *data, size_t size)
         }
         e->buf = alloc_buf(size);
         memcpy(e->buf.data, data, size);
+        /* Note: size implicitly checked by alloc_buf */
         e->buf.len = (int)size;
         ol->tail = e;
     }
@@ -1288,17 +1277,21 @@ buffer_list_peek(struct buffer_list *ol)
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 void
-buffer_list_aggregate_separator(struct buffer_list *bl, const size_t max_len,
-                                const char *sep)
+buffer_list_aggregate_separator(struct buffer_list *bl, const size_t max_len, const char *sep)
 {
     const size_t sep_len = strlen(sep);
     struct buffer_entry *more = bl->head;
     size_t size = 0;
-    int count = 0;
-    for (count = 0; more; ++count)
+    size_t count = 0;
+    for (; more; ++count)
     {
-        size_t extra_len = BLEN(&more->buf) + sep_len;
+        size_t extra_len = BLENZ(&more->buf) + sep_len;
         if (size + extra_len > max_len)
         {
             break;
@@ -1334,6 +1327,10 @@ buffer_list_aggregate_separator(struct buffer_list *bl, const size_t max_len,
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
 void
 buffer_list_aggregate(struct buffer_list *bl, const size_t max)
 {
@@ -1343,7 +1340,7 @@ buffer_list_aggregate(struct buffer_list *bl, const size_t max)
 void
 buffer_list_pop(struct buffer_list *ol)
 {
-    if (ol && ol->head)
+    if (buffer_list_defined(ol))
     {
         struct buffer_entry *e = ol->head->next;
         free_buf(&ol->head->buf);
@@ -1358,7 +1355,7 @@ buffer_list_pop(struct buffer_list *ol)
 }
 
 void
-buffer_list_advance(struct buffer_list *ol, int n)
+buffer_list_advance(struct buffer_list *ol, ssize_t n)
 {
     if (ol->head)
     {
@@ -1371,6 +1368,11 @@ buffer_list_advance(struct buffer_list *ol, int n)
     }
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-conversion"
+#endif
+
 struct buffer_list *
 buffer_list_file(const char *fn, int max_line_len)
 {
@@ -1379,10 +1381,10 @@ buffer_list_file(const char *fn, int max_line_len)
 
     if (fp)
     {
-        char *line = (char *) malloc(max_line_len);
+        char *line = (char *)malloc(max_line_len);
         if (line)
         {
-            bl = buffer_list_new(0);
+            bl = buffer_list_new();
             while (fgets(line, max_line_len, fp) != NULL)
             {
                 buffer_list_push(bl, line);
@@ -1426,3 +1428,31 @@ cleanup:
     fclose(fp);
     return ret;
 }
+
+char *
+buf_extract_field(struct buffer *buf, char sep, struct gc_arena *gc)
+{
+    if (!buf_valid(buf))
+    {
+        return NULL;
+    }
+
+    const uint8_t *seppos = memchr(CBPTR(buf), sep, buf_len(buf));
+    if (!seppos)
+    {
+        return NULL;
+    }
+    size_t field_len = seppos - CBPTR(buf);
+
+    char *field = gc_malloc(field_len + 1, false, gc);
+
+    memcpy(field, CBPTR(buf), field_len);
+    field[field_len] = 0;
+
+    buf_advance(buf, field_len + 1);
+    return field;
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif

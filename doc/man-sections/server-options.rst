@@ -14,7 +14,7 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   Valid syntax:
   ::
 
-     auth-gen-token [lifetime] [external-auth]
+     auth-gen-token [lifetime] [renewal-time] [external-auth]
 
   After successful user/password authentication, the OpenVPN server will
   with this option generate a temporary authentication token and push that
@@ -31,13 +31,17 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   The lifetime is defined in seconds. If lifetime is not set or it is set
   to :code:`0`, the token will never expire.
 
+  If ``renewal-time`` is not set it defaults to ``reneg-sec``.
+
+
   The token will expire either after the configured ``lifetime`` of the
   token is reached or after not being renewed for more than 2 \*
-  ``reneg-sec`` seconds. Clients will be sent renewed tokens on every TLS
-  renogiation to keep the client's token updated. This is done to
-  invalidate a token if a client is disconnected for a sufficently long
-  time, while at the same time permitting much longer token lifetimes for
-  active clients.
+  ``renewal-time`` seconds. Clients will be sent renewed tokens on every TLS
+  renegotiation. If ``renewal-time`` is lower than ``reneg-sec`` the server
+  will push an  updated temporary authentication token every ``reneweal-time``
+  seconds. This is done to invalidate a token if a client is disconnected for a
+  sufficiently long time, while at the same time permitting much longer token
+  lifetimes for active clients.
 
   This feature is useful for environments which are configured to use One
   Time Passwords (OTP) as part of the user/password authentications and
@@ -46,7 +50,7 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   When the :code:`external-auth` keyword is present the normal
   authentication method will always be called even if auth-token succeeds.
   Normally other authentications method are skipped if auth-token
-  verification suceeds or fails.
+  verification succeeds or fails.
 
   This option postpones this decision to the external authentication
   methods and checks the validity of the account and do other checks.
@@ -83,7 +87,15 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   external-auth option unless the client could authenticate in another
   acceptable way (e.g. client certificate), otherwise returning success
   will lead to authentication bypass (as does returning success on a wrong
-  password from a script).
+  password from a script). In the case that Expired token is accepted
+  the token will keep the session id and start time from the original
+  (expired) token.
+
+  **Note:** the username for ``--auth-gen-token`` can be overridden by
+  ``--override-username``. In this case the client will be pushed also the
+  ``--auth-token-user`` option and an auth token that is valid for that
+  username instead of the original username that the client authenticated
+  with.
 
 --auth-gen-token-secret file
   Specifies a file that holds a secret for the HMAC used in
@@ -134,6 +146,16 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   ``--push-reset``, ``--push-remove``, ``--iroute``, ``--ifconfig-push``,
   ``--vlan-pvid`` and ``--config``.
 
+  **Note:** OpenVPN uses the CN exactly as written in the certificate.
+  But since this is a file access the filesystem might interfere.
+  Importantly OpenVPN will consider two CNs that only differ in case as
+  different names but a case-insensitive filesystem (like you might
+  encounter on Windows or macOS) will treat them as the same. When you
+  generate your certificates make sure that the CNs are sufficiently
+  different to not cause issues. When trusting an external CA note that
+  this is a potential attack vector via maliciously generated
+  certificates that exploit this issue.
+
 --client-to-client
   Because the OpenVPN server mode handles multiple clients through a
   single tun or tap interface, it is effectively a router. The
@@ -145,6 +167,10 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   are currently connected. Otherwise, each client will only see the
   server. Don't use this option if you want to firewall tunnel traffic
   using custom, per-client rules.
+
+  Please note that when using data channel offload this option has no
+  effect. Packets are always sent to the tunnel interface and then
+  routed based on the system routing table.
 
 --disable
   Disable a particular client (based on the common name) from connecting.
@@ -170,11 +196,35 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   with connection requests using certificates which will ultimately fail
   to authenticate.
 
+  This limit applies after ``--connect-freq-initial`` and
+  only applies to client that have completed the three-way handshake
+  or client that use ``--tls-crypt-v2`` without cookie support
+  (``allow-noncookie`` argument to ``--tls-crypt-v2``).
+
   This is an imperfect solution however, because in a real DoS scenario,
   legitimate connections might also be refused.
 
   For the best protection against DoS attacks in server mode, use
   ``--proto udp`` and either ``--tls-auth`` or ``--tls-crypt``.
+
+--connect-freq-initial args
+  (UDP only) Allow a maximum of ``n`` initial connection packet responses
+  per ``sec`` seconds from the OpenVPN server to clients.
+
+  Valid syntax:
+  ::
+
+     connect-freq-initial n sec
+
+  OpenVPN starting at 2.6 is very efficient in responding to initial
+  connection packets. When not limiting the initial responses
+  an OpenVPN daemon can be abused in reflection attacks.
+  This option is designed to limit the rate OpenVPN will respond to initial
+  attacks.
+
+  Connection attempts that complete the initial three-way handshake
+  will not be counted against the limit. The default is to allow
+  100 initial connection per 10s.
 
 --duplicate-cn
   Allow multiple clients with the same common name to concurrently
@@ -276,6 +326,10 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   3.  Use ``--ifconfig-pool`` allocation for dynamic IP (last
       choice).
 
+  When DCO is enabled and the IP is not in contained in the network specified
+  by ``--ifconfig``, OpenVPN will install a /32 host route for the ``local``
+  IP address.
+
 --ifconfig-ipv6-push args
   for ``--client-config-dir`` per-client static IPv6 interface
   configuration, see ``--client-config-dir`` and ``--ifconfig-push`` for
@@ -286,7 +340,11 @@ fast hardware. SSL/TLS authentication must be used in this mode.
 
      ifconfig-ipv6-push ipv6addr/bits ipv6remote
 
---multihome
+  When DCO is enabled and the IP is not in contained in the network specified
+  by ``--ifconfig-ipv6``, OpenVPN will install a /128 host route for the
+  ``ipv6addr`` IP address.
+
+--multihome [same-interface]
   Configure a multi-homed UDP server. This option needs to be used when a
   server has more than one IP address (e.g. multiple interfaces, or
   secondary IP addresses), and is not using ``--local`` to force binding
@@ -297,12 +355,18 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   default.
 
   *Notes:*
-    -  This option is only relevant for UDP servers.
-    -  If you do an IPv6+IPv4 dual-stack bind on a Linux machine with
-       multiple IPv4 address, connections to IPv4 addresses will not
-       work right on kernels before 3.15, due to missing kernel
-       support for the IPv4-mapped case (some distributions have
-       ported this to earlier kernel versions, though).
+    - This option is only relevant for UDP servers.
+    - Starting with 2.7.0, OpenVPN will ignore the incoming interface of
+      the packet, and leave selection of the outgoing interface to the
+      normal routing/policy mechanisms of the OS ("set ipi_ifindex=0").
+    - if the ``same-interface`` flag is added, OpenVPN will copy the
+      incoming interface index to the outgoing interface index,
+      trying to send the packet out over the same interface where it came
+      in on (= restoring earlier OpenVPN behaviour). This might not work
+      if there are no usable routes on that interface.
+    - the \*BSD systems use a different API for IPv4 that does not provide
+      the interface index anyway (IP_RECVDSTADDR), so there the difference
+      applies only to IPv6.
 
 --iroute args
   Generate an internal route to a specific client. The ``netmask``
@@ -320,6 +384,12 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   routes are needed is that the ``--route`` directive routes the packet
   from the kernel to OpenVPN. Once in OpenVPN, the ``--iroute`` directive
   routes to the specific client.
+
+  However, when using DCO, the ``--iroute`` directive is usually enough
+  for DCO to fully configure the routing table. The extra ``--route``
+  directive is required only if the expected behaviour is to route the
+  traffic for a specific network to the VPN interface also when the
+  responsible client is not connected (traffic will then be dropped).
 
   This option must be specified either in a client instance config file
   using ``--client-config-dir`` or dynamically generated using a
@@ -346,7 +416,7 @@ fast hardware. SSL/TLS authentication must be used in this mode.
      iroute-ipv6 ipv6addr/bits
 
 --max-clients n
-  Limit server to a maximum of ``n`` concurrent clients.
+  Limit server to a maximum of ``n`` concurrent clients. Defaults to 1024.
 
 --max-routes-per-client n
   Allow a maximum of ``n`` internal routes per client (default
@@ -361,18 +431,40 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   Note that this directive affects OpenVPN's internal routing table, not
   the kernel routing table.
 
---opt-verify
-  Clients that connect with options that are incompatible with those of the
-  server will be disconnected.
+--override-username username
+  Sets the username of a connection to the specified username.  This username
+  will also be used by ``--auth-gen-token``. However, the overridden
+  username comes only into effect *after* the ``--client-config-dir`` has been
+  read and the ``--auth-user-pass-verify`` and ``--client-connect`` scripts
+  have been run.
 
-  Options that will be compared for compatibility include ``dev-type``,
-  ``link-mtu``, ``tun-mtu``, ``proto``, ``ifconfig``,
-  ``comp-lzo``, ``fragment``, ``keydir``, ``cipher``,
-  ``auth``, ``keysize``, ``secret``, ``no-replay``,
-  ``tls-auth``, ``key-method``, ``tls-server``
-  and ``tls-client``.
+  Also ``--username-as-common-name`` will use the client provided username
+  as common-name. It is recommended to avoid the use of the
+  ``--override-username`` option if the option ``--username-as-common-name``
+  is being used.
 
-  This option requires that ``--disable-occ`` NOT be used.
+  The changed username will be picked up by the status output and also by
+  the ``--auth-gen-token`` option. It will also be pushed to the client
+  using ``--auth-token-user`` if ``--auth-gen-token`` is enabled.
+
+  Internally on all subsequent renegotiations the client provided username
+  will be replaced by the username provided by ``--override-username``.
+  If the client changes to a username that is different from both the initial
+  and the overridden username, the client will be rejected.
+
+  Special care should be taken that both the initial username of the client
+  and the overridden username are handled correctly when using
+  ``--override-username`` and the related options to avoid
+  authentication/authorisation bypasses.
+
+  This option is mainly intended for use cases that use certificates and
+  multi factor authentication and therefore do not provide a username that
+  can be used for ``--auth-gen-token`` to allow providing a username in
+  these scenarios.
+
+  If the ``--auth-token`` directive is pushed by another script/plugin or
+  management interface, consider also generating and pushing
+  ``--auth-token-user``.
 
 --port-share args
   Share OpenVPN TCP with another service
@@ -391,11 +483,15 @@ fast hardware. SSL/TLS authentication must be used in this mode.
 
   ``dir`` specifies an optional directory where a temporary file with name
   N containing content C will be dynamically generated for each proxy
-  connection, where N is the source IP:port of the client connection and C
+  connection, where C is the source IP:port of the client connection and N
   is the source IP:port of the connection to the proxy receiver. This
   directory can be used as a dictionary by the proxy receiver to determine
   the origin of the connection. Each generated file will be automatically
   deleted when the proxied connection is torn down.
+
+  The files in ``dir`` are created and removed with the privileges of the
+  OpenVPN process, so ``dir`` must not be writable by any user other than
+  the one OpenVPN runs as.
 
   Not implemented on Windows.
 
@@ -412,70 +508,14 @@ fast hardware. SSL/TLS authentication must be used in this mode.
 
   This is a partial list of options which can currently be pushed:
   ``--route``, ``--route-gateway``, ``--route-delay``,
-  ``--redirect-gateway``, ``--ip-win32``, ``--dhcp-option``,
+  ``--redirect-gateway``, ``--ip-win32``, ``--dhcp-option``, ``--dns``,
   ``--inactive``, ``--ping``, ``--ping-exit``, ``--ping-restart``,
-  ``--setenv``, ``--auth-token``, ``--persist-key``, ``--persist-tun``,
+  ``--setenv``, ``--auth-token``, ``--persist-tun``,
   ``--echo``, ``--comp-lzo``, ``--socket-flags``, ``--sndbuf``,
-  ``--rcvbuf``
+  ``--rcvbuf``, ``--session-timeout``
 
---push-peer-info
-  Push additional information about the client to server. The following
-  data is always pushed to the server:
-
-  :code:`IV_VER=<version>`
-        The client OpenVPN version
-
-  :code:`IV_PLAT=[linux|solaris|openbsd|mac|netbsd|freebsd|win]`
-        The client OS platform
-
-  :code:`IV_LZO_STUB=1`
-        If client was built with LZO stub capability
-
-  :code:`IV_LZ4=1`
-        If the client supports LZ4 compressions.
-
-  :code:`IV_PROTO`
-    Details about protocol extensions that the peer supports. The
-    variable is a bitfield and the bits are defined as follows
-    (starting a bit 0 for the first (unused) bit:
-
-    - bit 1: The peer supports peer-id floating mechanism
-    - bit 2: The client expects a push-reply and the server may
-      send this reply without waiting for a push-request first.
-    - bit 3: The client is capable of doing key derivation using
-      RFC5705 key material exporter.
-    - bit 4: The client is capable of accepting additional arguments
-      to the `AUTH_PENDING` message.
-
-  :code:`IV_NCP=2`
-        Negotiable ciphers, client supports ``--cipher`` pushed by
-        the server, a value of 2 or greater indicates client supports
-        *AES-GCM-128* and *AES-GCM-256*.
-
-  :code:`IV_CIPHERS=<ncp-ciphers>`
-        The client announces the list of supported ciphers configured with the
-        ``--data-ciphers`` option to the server.
-
-  :code:`IV_GUI_VER=<gui_id> <version>`
-        The UI version of a UI if one is running, for example
-        :code:`de.blinkt.openvpn 0.5.47` for the Android app.
-
-  When ``--push-peer-info`` is enabled the additional information consists
-  of the following data:
-
-  :code:`IV_HWADDR=<mac address>`
-        The MAC address of clients default gateway
-
-  :code:`IV_SSL=<version string>`
-        The ssl version used by the client, e.g.
-        :code:`OpenSSL 1.0.2f 28 Jan 2016`.
-
-  :code:`IV_PLAT_VER=x.y`
-        The version of the operating system, e.g. 6.1 for Windows 7.
-
-  :code:`UV_<name>=<value>`
-        Client environment variables whose names start with
-        :code:`UV_`
+  Note: using ``--push`` requires OpenVPN to run in ``--mode server`` (or
+  using of one of ``--server``, ``--server-bridge`` helper directives).
 
 --push-remove opt
   Selectively remove all ``--push`` options matching "opt" from the option
@@ -637,6 +677,11 @@ fast hardware. SSL/TLS authentication must be used in this mode.
 
   If ``t`` is not present it defaults to ``n``.
 
+  Only dynamically learned routes are subject to this check. Routes added from
+  configuration, such as ``--iroute`` entries and a client's pushed ifconfig
+  address, are never removed by it; they are dropped only when the client
+  disconnects.
+
   This option helps to keep the dynamic routing table small. See also
   ``--max-routes-per-client``
 
@@ -760,7 +805,7 @@ fast hardware. SSL/TLS authentication must be used in this mode.
 
 --vlan-pvid v
   Specifies which VLAN identifier a "port" is associated with. Only valid
-  when ``--vlan-tagging`` is speficied.
+  when ``--vlan-tagging`` is specified.
 
   In the client context, the setting specifies which VLAN ID a client is
   associated with. In the global context, the VLAN ID of the server TAP

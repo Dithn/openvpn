@@ -1,8 +1,8 @@
 #
 #  tapctl -- Utility to manipulate TUN/TAP interfaces on Windows
 #
-#  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
-#  Copyright (C) 2018 Simon Rozman <simon@rozman.si>
+#  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
+#  Copyright (C) 2018-2026 Simon Rozman <simon@rozman.si>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License version 2
@@ -14,19 +14,12 @@
 #  GNU General Public License for more details.
 #
 #  You should have received a copy of the GNU General Public License along
-#  with this program; if not, write to the Free Software Foundation, Inc.,
-#  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+#  with this program; if not, see <https://www.gnu.org/licenses/>.
 #
 
-include $(top_srcdir)/build/ltrc.inc
+include $(top_srcdir)/ltrc.inc
 
 MAINTAINERCLEANFILES = $(srcdir)/Makefile.in
-
-EXTRA_DIST = \
-	tapctl.vcxproj \
-	tapctl.vcxproj.filters \
-	tapctl.props \
-	tapctl.exe.manifest
 
 AM_CPPFLAGS = \
 	-I$(top_srcdir)/include -I$(top_srcdir)/src/compat
@@ -34,12 +27,15 @@ AM_CPPFLAGS = \
 AM_CFLAGS = \
 	$(TAP_CFLAGS)
 
+EXTRA_DIST = \
+	CMakeLists.txt \
+	tapctl.exe.manifest
+
 if WIN32
 sbin_PROGRAMS = tapctl
 tapctl_CFLAGS = \
 	-municode -D_UNICODE \
-	-UNTDDI_VERSION -U_WIN32_WINNT \
-	-D_WIN32_WINNT=_WIN32_WINNT_VISTA
+	-UNTDDI_VERSION	-D_WIN32_WINNT=_WIN32_WINNT_WIN10
 tapctl_LDADD = -ladvapi32 -lole32 -lsetupapi
 endif
 

@@ -5,7 +5,7 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -17,14 +17,11 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#elif defined(_MSC_VER)
-#include "config-msvc.h"
 #endif
 
 #include "syshead.h"
@@ -40,9 +37,11 @@
 struct mbuf_set *
 mbuf_init(unsigned int size)
 {
+    ASSERT(size <= MBUF_SIZE_MAX);
+
     struct mbuf_set *ret;
     ALLOC_OBJ_CLEAR(ret, struct mbuf_set);
-    ret->capacity = adjust_power_of_2(size);
+    ret->capacity = (unsigned int)adjust_power_of_2(size);
     ALLOC_ARRAY(ret->array, struct mbuf_item, ret->capacity);
     return ret;
 }
@@ -52,8 +51,7 @@ mbuf_free(struct mbuf_set *ms)
 {
     if (ms)
     {
-        int i;
-        for (i = 0; i < (int) ms->len; ++i)
+        for (unsigned int i = 0; i < ms->len; ++i)
         {
             struct mbuf_item *item = &ms->array[MBUF_INDEX(ms->head, i, ms->capacity)];
             mbuf_free_buf(item->buffer);
@@ -87,6 +85,21 @@ mbuf_free_buf(struct mbuf_buffer *mb)
     }
 }
 
+/*
+ * Dereferenced items cannot be removed from the middle of the ring, so
+ * reclaim them once they reach the head: a ring left without any live
+ * item must not keep looking full.
+ */
+static void
+mbuf_reclaim_head(struct mbuf_set *ms)
+{
+    while (ms->len && !ms->array[ms->head].instance)
+    {
+        ms->head = MBUF_INDEX(ms->head, 1, ms->capacity);
+        --ms->len;
+    }
+}
+
 void
 mbuf_add_item(struct mbuf_set *ms, const struct mbuf_item *item)
 {
@@ -115,6 +128,7 @@ mbuf_extract_item(struct mbuf_set *ms, struct mbuf_item *item)
     bool ret = false;
     if (ms)
     {
+        ASSERT(item);
         while (ms->len)
         {
             *item = ms->array[ms->head];
@@ -126,6 +140,7 @@ mbuf_extract_item(struct mbuf_set *ms, struct mbuf_item *item)
                 break;
             }
         }
+        mbuf_reclaim_head(ms);
     }
     return ret;
 }
@@ -136,8 +151,7 @@ mbuf_peek_dowork(struct mbuf_set *ms)
     struct multi_instance *ret = NULL;
     if (ms)
     {
-        int i;
-        for (i = 0; i < (int) ms->len; ++i)
+        for (unsigned int i = 0; i < ms->len; ++i)
         {
             struct mbuf_item *item = &ms->array[MBUF_INDEX(ms->head, i, ms->capacity)];
             if (item->instance)
@@ -151,12 +165,11 @@ mbuf_peek_dowork(struct mbuf_set *ms)
 }
 
 void
-mbuf_dereference_instance(struct mbuf_set *ms, struct multi_instance *mi)
+mbuf_dereference_instance(struct mbuf_set *ms, const struct multi_instance *mi)
 {
     if (ms)
     {
-        int i;
-        for (i = 0; i < (int) ms->len; ++i)
+        for (unsigned int i = 0; i < ms->len; ++i)
         {
             struct mbuf_item *item = &ms->array[MBUF_INDEX(ms->head, i, ms->capacity)];
             if (item->instance == mi)
@@ -167,5 +180,6 @@ mbuf_dereference_instance(struct mbuf_set *ms, struct multi_instance *mi)
                 msg(D_MBUF, "MBUF: dereferenced queued packet");
             }
         }
+        mbuf_reclaim_head(ms);
     }
 }

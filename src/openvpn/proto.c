@@ -5,7 +5,7 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -17,14 +17,11 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 #ifdef HAVE_CONFIG_H
 #include "config.h"
-#elif defined(_MSC_VER)
-#include "config-msvc.h"
 #endif
 
 #include "syshead.h"
@@ -42,13 +39,12 @@ static bool
 is_ipv_X(int tunnel_type, struct buffer *buf, int ip_ver)
 {
     int offset;
-    uint16_t proto;
     const struct openvpn_iphdr *ih;
 
     verify_align_4(buf);
     if (tunnel_type == DEV_TYPE_TUN)
     {
-        if (BLEN(buf) < sizeof(struct openvpn_iphdr))
+        if (BLENZ(buf) < sizeof(struct openvpn_iphdr))
         {
             return false;
         }
@@ -57,15 +53,14 @@ is_ipv_X(int tunnel_type, struct buffer *buf, int ip_ver)
     else if (tunnel_type == DEV_TYPE_TAP)
     {
         const struct openvpn_ethhdr *eh;
-        if (BLEN(buf) < (sizeof(struct openvpn_ethhdr)
-                         + sizeof(struct openvpn_iphdr)))
+        if (BLENZ(buf) < sizeof(struct openvpn_ethhdr) + sizeof(struct openvpn_iphdr))
         {
             return false;
         }
         eh = (const struct openvpn_ethhdr *)BPTR(buf);
 
         /* start by assuming this is a standard Eth fram */
-        proto = eh->proto;
+        uint16_t proto = eh->proto;
         offset = sizeof(struct openvpn_ethhdr);
 
         /* if this is a 802.1q frame, parse the header using the according
@@ -74,8 +69,7 @@ is_ipv_X(int tunnel_type, struct buffer *buf, int ip_ver)
         if (proto == htons(OPENVPN_ETH_P_8021Q))
         {
             const struct openvpn_8021qhdr *evh;
-            if (BLEN(buf) < (sizeof(struct openvpn_ethhdr)
-                             + sizeof(struct openvpn_iphdr)))
+            if (BLENZ(buf) < sizeof(struct openvpn_8021qhdr) + sizeof(struct openvpn_iphdr))
             {
                 return false;
             }
@@ -112,12 +106,12 @@ is_ipv_X(int tunnel_type, struct buffer *buf, int ip_ver)
 bool
 is_ipv4(int tunnel_type, struct buffer *buf)
 {
-    return is_ipv_X( tunnel_type, buf, 4 );
+    return is_ipv_X(tunnel_type, buf, 4);
 }
 bool
 is_ipv6(int tunnel_type, struct buffer *buf)
 {
-    return is_ipv_X( tunnel_type, buf, 6 );
+    return is_ipv_X(tunnel_type, buf, 6);
 }
 
 
@@ -134,9 +128,8 @@ ip_checksum(const sa_family_t af, const uint8_t *payload, const int len_payload,
      */
     for (int i = 0; i < len_payload; i += 2)
     {
-        sum +=  (uint16_t)(((payload[i] << 8) & 0xFF00)
-                           +((i + 1 < len_payload) ? (payload[i + 1] & 0xFF) : 0));
-
+        sum += (uint16_t)(((payload[i] << 8) & 0xFF00)
+                          + ((i + 1 < len_payload) ? (payload[i + 1] & 0xFF) : 0));
     }
 
     /*
@@ -146,7 +139,6 @@ ip_checksum(const sa_family_t af, const uint8_t *payload, const int len_payload,
     for (int i = 0; i < addr_len; i += 2)
     {
         sum += (uint16_t)((src_addr[i] << 8) & 0xFF00) + (src_addr[i + 1] & 0xFF);
-
     }
     for (int i = 0; i < addr_len; i += 2)
     {
@@ -169,62 +161,5 @@ ip_checksum(const sa_family_t af, const uint8_t *payload, const int len_payload,
     }
 
     /* Take the one's complement of sum */
-    return ((uint16_t) ~sum);
+    return ((uint16_t)~sum);
 }
-
-#ifdef PACKET_TRUNCATION_CHECK
-
-void
-ipv4_packet_size_verify(const uint8_t *data,
-                        const int size,
-                        const int tunnel_type,
-                        const char *prefix,
-                        counter_type *errors)
-{
-    if (size > 0)
-    {
-        struct buffer buf;
-
-        buf_set_read(&buf, data, size);
-
-        if (is_ipv4(tunnel_type, &buf))
-        {
-            const struct openvpn_iphdr *pip;
-            int hlen;
-            int totlen;
-            const char *msgstr = "PACKET SIZE INFO";
-            unsigned int msglevel = D_PACKET_TRUNC_DEBUG;
-
-            if (BLEN(&buf) < (int) sizeof(struct openvpn_iphdr))
-            {
-                return;
-            }
-
-            verify_align_4(&buf);
-            pip = (struct openvpn_iphdr *) BPTR(&buf);
-
-            hlen = OPENVPN_IPH_GET_LEN(pip->version_len);
-            totlen = ntohs(pip->tot_len);
-
-            if (BLEN(&buf) != totlen)
-            {
-                msgstr = "PACKET TRUNCATION ERROR";
-                msglevel = D_PACKET_TRUNC_ERR;
-                if (errors)
-                {
-                    ++(*errors);
-                }
-            }
-
-            msg(msglevel, "%s %s: size=%d totlen=%d hlen=%d errcount=" counter_format,
-                msgstr,
-                prefix,
-                BLEN(&buf),
-                totlen,
-                hlen,
-                errors ? *errors : (counter_type)0);
-        }
-    }
-}
-
-#endif /* ifdef PACKET_TRUNCATION_CHECK */

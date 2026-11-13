@@ -5,7 +5,7 @@
  *             packet encryption, packet authentication, and
  *             packet compression.
  *
- *  Copyright (C) 2002-2018 OpenVPN Inc <sales@openvpn.net>
+ *  Copyright (C) 2002-2026 OpenVPN Inc <sales@openvpn.net>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License version 2
@@ -17,12 +17,12 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, write to the Free Software Foundation, Inc.,
- *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+ *  with this program; if not, see <https://www.gnu.org/licenses/>.
  */
 
 /**
- * @file Header file for server-mode related structures and functions.
+ * @file
+ * Header file for server-mode related structures and functions.
  */
 
 #ifndef MULTI_H
@@ -37,8 +37,9 @@
 #include "pool.h"
 #include "mudp.h"
 #include "mtcp.h"
-#include "perf.h"
+#include "multi_io.h"
 #include "vlan.h"
+#include "reflect_filter.h"
 
 #define MULTI_PREFIX_MAX_LENGTH 256
 
@@ -49,8 +50,8 @@
  */
 struct multi_reap
 {
-    int bucket_base;
-    int buckets_per_pass;
+    uint32_t bucket_base;
+    uint32_t buckets_per_pass;
     time_t last_call;
 };
 
@@ -72,7 +73,7 @@ struct client_connect_defer_state
     int cur_handler_index;
     /* Remember which option classes where processed for delayed option
      * handling. */
-    unsigned int option_types_found;
+    uint64_t option_types_found;
 
     /**
      * The temporary file name that contains the return status of the
@@ -97,19 +98,28 @@ struct client_connect_defer_state
  * page describes the role the structure plays when OpenVPN is running in
  * server-mode.
  */
-struct multi_instance {
-    struct schedule_entry se;  /* this must be the first element of the structure */
+struct multi_instance
+{
+    struct schedule_entry se; /* this must be the first element of the structure,
+                               * We cast between this and schedule_entry so the
+                               * beginning of the struct must be identical */
+
+    struct event_arg ev_arg;  /**< this struct will store a pointer to either mi or
+                               * link_socket, depending on the event type, to keep
+                               * it accessible it's placed within the same struct
+                               * it points to. */
+
     struct gc_arena gc;
     bool halt;
     int refcount;
-    int route_count;           /* number of routes (including cached routes) owned by this instance */
-    time_t created;             /**< Time at which a VPN tunnel instance
-                                 *   was created.  This parameter is set
-                                 *   by the \c multi_create_instance()
-                                 *   function. */
-    struct timeval wakeup;     /* absolute time */
-    struct mroute_addr real;    /**< External network address of the
-                                 *   remote peer. */
+    int route_count;         /* number of routes (including cached routes) owned by this instance */
+    time_t created;          /**< Time at which a VPN tunnel instance
+                              *   was created.  This parameter is set
+                              *   by the \c multi_create_instance()
+                              *   function. */
+    struct timeval wakeup;   /* absolute time */
+    struct mroute_addr real; /**< External network address of the
+                              *   remote peer. */
     ifconfig_pool_handle vaddr_handle;
     char msg_prefix[MULTI_PREFIX_MAX_LENGTH];
 
@@ -118,20 +128,27 @@ struct multi_instance {
     struct mbuf_set *tcp_link_out_deferred;
     bool socket_set_called;
 
-    in_addr_t reporting_addr;     /* IP address shown in status listing */
+    in_addr_t reporting_addr;            /* IP address shown in status listing */
     struct in6_addr reporting_addr_ipv6; /* IPv6 address in status listing */
 
+    /** Indicates that the real address/port of the client is hashed in
+     * the multi_context m->hash table. */
     bool did_real_hash;
-    bool did_iter;
+
+    /** If this is multi_instance is hashed in the sid lookup table the session
+     * id here is a non-null session id and the hash map's key pointer points
+     * to this field (the value pointer points to the whole struct) */
+    struct session_id sid_hashed_value;
+
 #ifdef ENABLE_MANAGEMENT
     bool did_cid_hash;
     struct buffer_list *cc_config;
 #endif
     bool did_iroutes;
-    int n_clients_delta; /* added to multi_context.n_clients when instance is closed */
+    int n_clients_delta;    /* added to multi_context.n_clients when instance is closed */
 
-    struct context context;     /**< The context structure storing state
-                                 *   for this VPN tunnel. */
+    struct context context; /**< The context structure storing state
+                             *   for this VPN tunnel. */
     struct client_connect_defer_state client_connect_defer_state;
 #ifdef ENABLE_ASYNC_PUSH
     int inotify_watch; /* watch descriptor for acf */
@@ -149,30 +166,39 @@ struct multi_instance {
  * page describes the role the structure plays when OpenVPN is running in
  * server-mode.
  */
-struct multi_context {
-    struct multi_instance **instances;  /**< Array of multi_instances. An instance can be
-                                         * accessed using peer-id as an index. */
-
-    struct hash *hash;          /**< VPN tunnel instances indexed by real
-                                 *   address of the remote peer. */
-    struct hash *vhash;         /**< VPN tunnel instances indexed by
-                                 *   virtual address of remote hosts. */
-    struct hash *iter;          /**< VPN tunnel instances indexed by real
-                                 *   address of the remote peer, optimized
-                                 *   for iteration. */
+struct multi_context
+{
+    struct multi_instance **instances; /**< Array of multi_instances with the size of
+                                        *  max_clients.  An instance can be
+                                        * accessed using peer-id as an index. */
+    uint32_t max_peerid;               /**< highest currently allocated peer-id
+                                        * and maximum allocated/valid index in
+                                        * instances */
+    uint32_t assigned_peer_ids;        /**< Number of peer-ids that are
+                                        *   currently assigned */
+    struct hash *hash;                 /**< VPN tunnel instances indexed by real
+                                        *   address of the remote peer. */
+    struct hash *vhash;                /**< VPN tunnel instances indexed by
+                                        *   virtual address of remote hosts. */
+    struct hash *sid_hash;             /**< TLS sessions indexed by the peer's
+                                            session id. We do not care about
+                                            collisions here as clients should
+                                            have unique ids and supporting
+                                            clients with identical SIDs
+                                            is not needed */
     struct schedule *schedule;
-    struct mbuf_set *mbuf;      /**< Set of buffers for passing data
-                                 *   channel packets between VPN tunnel
-                                 *   instances. */
-    struct multi_tcp *mtcp;     /**< State specific to OpenVPN using TCP
-                                 *   as external transport. */
+    struct mbuf_set *mbuf;             /**< Set of buffers for passing data
+                                        *   channel packets between VPN tunnel
+                                        *   instances. */
+    struct multi_io *multi_io;         /**< I/O state and events tracker */
     struct ifconfig_pool *ifconfig_pool;
     struct frequency_limit *new_connection_limiter;
+    struct initial_packet_rate_limit *initial_rate_limiter;
     struct mroute_helper *route_helper;
     struct multi_reap *reaper;
     struct mroute_addr local;
     bool enable_c2c;
-    int max_clients;
+    uint32_t max_clients;
     int tcp_queue_limit;
     int status_file_version;
     int n_clients; /* current number of authenticated clients */
@@ -188,8 +214,8 @@ struct multi_context {
     struct context_buffers *context_buffers;
     time_t per_second_trigger;
 
-    struct context top;         /**< Storage structure for process-wide
-                                 *   configuration. */
+    struct context top; /**< Storage structure for process-wide
+                         *   configuration. */
 
     /*
      * Timer object for stale route check
@@ -223,8 +249,9 @@ struct multi_route
     struct mroute_addr addr;
     struct multi_instance *instance;
 
-#define MULTI_ROUTE_CACHE   (1<<0)
-#define MULTI_ROUTE_AGEABLE (1<<1)
+#define MULTI_ROUTE_CACHE     (1 << 0)
+#define MULTI_ROUTE_AGEABLE   (1 << 1)
+#define MULTI_ROUTE_PERMANENT (1 << 2) /* config-derived (iroute / pushed ifconfig); never stale-aged */
     unsigned int flags;
 
     unsigned int cache_generation;
@@ -237,11 +264,6 @@ struct multi_route
  * Main event loop for OpenVPN in server mode.
  * @ingroup eventloop
  *
- * This function calls the appropriate main event loop function depending
- * on the transport protocol used:
- *  - \c tunnel_server_udp()
- *  - \c tunnel_server_tcp()
- *
  * @param top          - Top-level context structure.
  */
 void tunnel_server(struct context *top);
@@ -253,34 +275,17 @@ const char *multi_instance_string(const struct multi_instance *mi, bool null, st
  * Called by mtcp.c, mudp.c, or other (to be written) protocol drivers
  */
 
-void multi_init(struct multi_context *m, struct context *t, bool tcp_mode);
-
-void multi_uninit(struct multi_context *m);
-
-void multi_top_init(struct multi_context *m, const struct context *top);
-
-void multi_top_free(struct multi_context *m);
-
-struct multi_instance *multi_create_instance(struct multi_context *m, const struct mroute_addr *real);
+struct multi_instance *multi_create_instance(struct multi_context *m,
+                                             const struct mroute_addr *real,
+                                             struct link_socket *sock);
 
 void multi_close_instance(struct multi_context *m, struct multi_instance *mi, bool shutdown);
 
 bool multi_process_timeout(struct multi_context *m, const unsigned int mpp_flags);
 
-/**
- * Handles peer floating.
- *
- * If peer is floated to a taken address, either drops packet
- * (if peer that owns address has different CN) or disconnects
- * existing peer. Updates multi_instance with new address,
- * updates hashtables in multi_context.
- */
-void multi_process_float(struct multi_context *m, struct multi_instance *mi);
-
-#define MPP_PRE_SELECT             (1<<0)
-#define MPP_CONDITIONAL_PRE_SELECT (1<<1)
-#define MPP_CLOSE_ON_SIGNAL        (1<<2)
-#define MPP_RECORD_TOUCH           (1<<3)
+#define MPP_PRE_SELECT      (1 << 0)
+#define MPP_CLOSE_ON_SIGNAL (1 << 1)
+#define MPP_RECORD_TOUCH    (1 << 2)
 
 
 /**************************************************************************/
@@ -291,8 +296,8 @@ void multi_process_float(struct multi_context *m, struct multi_instance *mi);
  * may need updating and some follow-up action may be required.  This
  * function controls the necessary postprocessing.  It is called by many
  * other functions that handle VPN tunnel related activity, such as \c
- * multi_process_incoming_link(), \c multi_process_outgoing_link(), \c
- * multi_process_incoming_tun(), \c multi_process_outgoing_tun(), and \c
+ * multi_process_incoming_link(), \c multi_io_write_link(), \c
+ * multi_process_incoming_tun(), \c multi_io_write_tun(), and \c
  * multi_process_timeout(), among others.
  *
  * @param m            - The single \c multi_context structure.
@@ -305,8 +310,15 @@ void multi_process_float(struct multi_context *m, struct multi_instance *mi);
  *    signal during processing.
  *  - False, if the VPN tunnel instance \a mi was closed.
  */
-bool multi_process_post(struct multi_context *m, struct multi_instance *mi, const unsigned int flags);
+bool multi_process_post(struct multi_context *m, struct multi_instance *mi,
+                        const unsigned int flags);
 
+/**
+ * Process an incoming DCO message (from kernel space).
+ *
+ * @param dco - Pointer to the structure representing the DCO context.
+ */
+void multi_process_incoming_dco(dco_context_t *dco);
 
 /**************************************************************************/
 /**
@@ -330,8 +342,10 @@ bool multi_process_post(struct multi_context *m, struct multi_instance *mi, cons
  *                       when using TCP transport. Otherwise NULL, as is
  *                       the case when using UDP transport.
  * @param mpp_flags    - Fast I/O optimization flags.
+ * @param sock         - Socket where the packet was received.
  */
-bool multi_process_incoming_link(struct multi_context *m, struct multi_instance *instance, const unsigned int mpp_flags);
+bool multi_process_incoming_link(struct multi_context *m, struct multi_instance *instance,
+                                 const unsigned int mpp_flags, struct link_socket *sock);
 
 
 /**
@@ -352,15 +366,7 @@ bool multi_process_incoming_link(struct multi_context *m, struct multi_instance 
 bool multi_process_incoming_tun(struct multi_context *m, const unsigned int mpp_flags);
 
 
-void multi_process_drop_outgoing_tun(struct multi_context *m, const unsigned int mpp_flags);
-
-void multi_print_status(struct multi_context *m, struct status_output *so, const int version);
-
 struct multi_instance *multi_get_queue(struct mbuf_set *ms);
-
-void multi_add_mbuf(struct multi_context *m,
-                    struct multi_instance *mi,
-                    struct mbuf_buffer *mb);
 
 void multi_ifconfig_pool_persist(struct multi_context *m, bool force);
 
@@ -382,12 +388,16 @@ void multi_process_file_closed(struct multi_context *m, const unsigned int mpp_f
 
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#endif
+
 /*
  * Return true if our output queue is not full
  */
 static inline bool
-multi_output_queue_ready(const struct multi_context *m,
-                         const struct multi_instance *mi)
+multi_output_queue_ready(const struct multi_context *m, const struct multi_instance *mi)
 {
     if (mi->tcp_link_out_deferred)
     {
@@ -399,26 +409,9 @@ multi_output_queue_ready(const struct multi_context *m,
     }
 }
 
-/*
- * Determine which instance has pending output
- * and prepare the output for sending in
- * the to_link buffer.
- */
-static inline struct multi_instance *
-multi_process_outgoing_link_pre(struct multi_context *m)
-{
-    struct multi_instance *mi = NULL;
-
-    if (m->pending)
-    {
-        mi = m->pending;
-    }
-    else if (mbuf_defined(m->mbuf))
-    {
-        mi = multi_get_queue(m->mbuf);
-    }
-    return mi;
-}
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
 
 /*
  * Per-client route quota management
@@ -483,8 +476,7 @@ multi_route_del(struct multi_route *route)
 }
 
 static inline bool
-multi_route_defined(const struct multi_context *m,
-                    const struct multi_route *r)
+multi_route_defined(const struct multi_context *m, const struct multi_route *r)
 {
     if (r->instance->halt)
     {
@@ -509,15 +501,14 @@ multi_route_defined(const struct multi_context *m,
 /*
  * Takes prefix away from multi_instance.
  */
-void
-ungenerate_prefix(struct multi_instance *mi);
+void ungenerate_prefix(struct multi_instance *mi);
 
 /*
  * Set a msg() function prefix with our current client instance ID.
  */
 
 static inline void
-set_prefix(struct multi_instance *mi)
+set_prefix(const struct multi_instance *mi)
 {
 #ifdef MULTI_DEBUG_EVENT_LOOP
     if (mi->msg_prefix[0])
@@ -546,10 +537,10 @@ clear_prefix(void)
  * don't want to reap in a single pass.
  */
 
-#define REAP_MAX_WAKEUP   10  /* Do reap pass at least once per n seconds */
-#define REAP_DIVISOR     256  /* How many passes to cover whole hash table */
-#define REAP_MIN          16  /* Minimum number of buckets per pass */
-#define REAP_MAX        1024  /* Maximum number of buckets per pass */
+#define REAP_MAX_WAKEUP 10   /* Do reap pass at least once per n seconds */
+#define REAP_DIVISOR    256  /* How many passes to cover whole hash table */
+#define REAP_MIN        16   /* Minimum number of buckets per pass */
+#define REAP_MAX        1024 /* Maximum number of buckets per pass */
 
 /*
  * Mark a cached host route for deletion after this
@@ -581,20 +572,21 @@ multi_process_per_second_timers(struct multi_context *m)
 }
 
 /*
- * Compute earliest timeout expiry from the set of
- * all instances.  Output:
+ * Updates \c dest with the earliest timeout as a delta relative to the current
+ * time and sets \c m->earliest_wakeup to the \c multi_instance with the
+ * soonest scheduled wakeup.
  *
- * m->earliest_wakeup : instance needing the earliest service.
- * dest               : earliest timeout as a delta in relation
- *                      to current time.
+ * @param m     Pointer to the multi context
+ * @param dest  Pointer to a timeval struct that will hold the earliest timeout
+ *              delta.
  */
 static inline void
-multi_get_timeout(struct multi_context *m, struct timeval *dest)
+multi_get_timeout_instance(struct multi_context *m, struct timeval *dest)
 {
     struct timeval tv, current;
 
     CLEAR(tv);
-    m->earliest_wakeup = (struct multi_instance *) schedule_get_earliest_wakeup(m->schedule, &tv);
+    m->earliest_wakeup = (struct multi_instance *)schedule_get_earliest_wakeup(m->schedule, &tv);
     if (m->earliest_wakeup)
     {
         ASSERT(!openvpn_gettimeofday(&current, NULL));
@@ -614,57 +606,35 @@ multi_get_timeout(struct multi_context *m, struct timeval *dest)
 }
 
 
+#define CLIENT_CONNECT_OPT_MASK                                                            \
+    (OPT_P_INSTANCE | OPT_P_INHERIT | OPT_P_PUSH | OPT_P_TIMER | OPT_P_CONFIG | OPT_P_ECHO \
+     | OPT_P_COMP | OPT_P_SOCKFLAGS)
+
 /**
- * Send a packet over the virtual tun/tap network interface to its locally
- * reachable destination.
- * @ingroup internal_multiplexer
+ * Determines if the ifconfig_push_local address falls into the range of the local
+ * IP addresses of the VPN interface (ifconfig_local with ifconfig_remote_netmask)
  *
- * This function calls \c process_outgoing_tun() to perform the actual
- * sending of the packet.  Afterwards, it calls \c multi_process_post() to
- * perform server-mode postprocessing.
+ * @param o            The instance wide options
+ * @param dest         The destination IP address to check
  *
- * @param m            - The single \c multi_context structure.
- * @param mpp_flags    - Fast I/O optimization flags.
- *
- * @return
- *  - True, if the \c multi_instance associated with the packet sent was
- *    not closed due to a signal during processing.
- *  - Falls, if the \c multi_instance was closed.
+ * @return Returns true if ifconfig_push is outside that range and requires an extra
+ * route to be installed.
  */
-static inline bool
-multi_process_outgoing_tun(struct multi_context *m, const unsigned int mpp_flags)
-{
-    struct multi_instance *mi = m->pending;
-    bool ret = true;
+bool
+multi_check_push_ifconfig_extra_route(const struct options *o, in_addr_t dest);
 
-    ASSERT(mi);
-#ifdef MULTI_DEBUG_EVENT_LOOP
-    printf("%s -> TUN len=%d\n",
-           id(mi),
-           mi->context.c2.to_tun.len);
-#endif
-    set_prefix(mi);
-    vlan_process_outgoing_tun(m, mi);
-    process_outgoing_tun(&mi->context);
-    ret = multi_process_post(m, mi, mpp_flags);
-    clear_prefix();
-    return ret;
-}
-
-#define CLIENT_CONNECT_OPT_MASK (OPT_P_INSTANCE | OPT_P_INHERIT   \
-                                 |OPT_P_PUSH | OPT_P_TIMER | OPT_P_CONFIG   \
-                                 |OPT_P_ECHO | OPT_P_COMP | OPT_P_SOCKFLAGS)
-
-static inline bool
-multi_process_outgoing_link_dowork(struct multi_context *m, struct multi_instance *mi, const unsigned int mpp_flags)
-{
-    bool ret = true;
-    set_prefix(mi);
-    process_outgoing_link(&mi->context);
-    ret = multi_process_post(m, mi, mpp_flags);
-    clear_prefix();
-    return ret;
-}
+/**
+ * Determines if the ifconfig_ipv6_local address falls into the range of the local
+ * IP addresses of the VPN interface (ifconfig_local with ifconfig_remote_netmask)
+ *
+ * @param o            The instance wide options
+ * @param dest         The destination IPv6 address to check
+ *
+ * @return Returns true if ifconfig_push is outside that range and requires an extra
+ * route to be installed.
+ */
+bool
+multi_check_push_ifconfig_ipv6_extra_route(const struct options *o, const struct in6_addr *dest);
 
 /*
  * Check for signals.
@@ -686,5 +656,14 @@ multi_set_pending(struct multi_context *m, struct multi_instance *mi)
  */
 void multi_assign_peer_id(struct multi_context *m, struct multi_instance *mi);
 
+#ifdef ENABLE_MANAGEMENT
+struct multi_instance *
+lookup_by_cid(struct multi_context *m, const unsigned long cid);
+#endif
+
+void
+update_vhash(struct multi_context *m, struct multi_instance *mi, const char *new_ip, const char *new_ipv6);
+void unlearn_ifconfig(struct multi_context *m, struct multi_instance *mi);
+void unlearn_ifconfig_ipv6(struct multi_context *m, struct multi_instance *mi);
 
 #endif /* MULTI_H */
